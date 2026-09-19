@@ -61,7 +61,10 @@ export async function verifyParity(): Promise<ParityResult> {
       ).fetchPackage();
       fingerprints["kevcloud"] = fingerprint(kc);
       backends.push("kevcloud");
-      if (fingerprints["kevcloud"] !== fingerprints["nextcloud-sim"]) {
+      if (
+        fetched["nextcloud-sim"] &&
+        fingerprints["kevcloud"] !== fingerprints["nextcloud-sim"]
+      ) {
         problems.push("cross-backend mismatch: kevcloud differs from sims");
       }
     } catch (e) {
@@ -131,14 +134,65 @@ export async function verifyParity(): Promise<ParityResult> {
           manifest: parsed["manifest.json"], signature: parsed["signature.json"],
         });
         backends.push("google-drive");
-        if (fingerprints["google-drive"] !== fingerprints["nextcloud-sim"]) {
+        if (
+          fetched["nextcloud-sim"] &&
+          fingerprints["google-drive"] !== fingerprints["nextcloud-sim"]
+        ) {
           problems.push("cross-backend mismatch: google-drive differs from sims");
         }
       }
     }
   }
 
+  // Timeline indexes must also match across sims (same stories, same order).
+  if (fetched["nextcloud-sim"] && fetched["google-drive-sim"]) {
+    const idxProblems = await compareTimelines(storesRoot);
+    problems.push(...idxProblems);
+  }
+
   return { ok: problems.length === 0, backends, fingerprints, problems };
+}
+
+async function readTimelineIds(
+  store: LocalFolderStore,
+  label: string,
+  problems: string[]
+): Promise<string[] | null> {
+  let index: { stories?: unknown };
+  try {
+    index = JSON.parse(new TextDecoder().decode(await store.readObject("timeline.json")));
+  } catch {
+    return null; // no timeline yet: not a mismatch, just empty
+  }
+  if (!index || !Array.isArray(index.stories)) {
+    problems.push(`${label}: timeline.json is malformed`);
+    return [];
+  }
+  const ids: string[] = [];
+  for (const s of index.stories as { id?: unknown }[]) {
+    if (typeof s?.id !== "string") {
+      problems.push(`${label}: timeline has malformed entry`);
+      continue;
+    }
+    ids.push(s.id);
+  }
+  return ids;
+}
+
+async function compareTimelines(storesRoot: string): Promise<string[]> {
+  const problems: string[] = [];
+  const { LocalFolderStore: LFS } = await import("@rooted/storage");
+  const a = await readTimelineIds(
+    new LFS(resolve(storesRoot, "nextcloud-sim")), "nextcloud-sim", problems
+  );
+  const b = await readTimelineIds(
+    new LFS(resolve(storesRoot, "google-drive-sim")), "google-drive-sim", problems
+  );
+  if (a === null || b === null) return problems; // at least one side empty: nothing to compare
+  if (a.length !== b.length || !a.every((id, i) => id === b[i])) {
+    problems.push("cross-backend mismatch: timeline indexes differ");
+  }
+  return problems;
 }
 
 function isDirectRun(): boolean {
