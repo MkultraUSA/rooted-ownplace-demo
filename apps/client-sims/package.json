@@ -1,0 +1,1 @@
+{ "name": "@rooted/client-sims", "version": "0.1.0", "type": "module", "scripts": { "verify": "tsx src/verify-feed.ts" }, "dependencies": { "@rooted/protocol": "0.1.0", "@rooted/storage": "0.1.0" } }

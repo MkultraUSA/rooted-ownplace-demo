@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LocalFolderStore } from "../src/index.ts";
+import { LocalFolderStore } from "../src/index.js";
 
 test("LocalFolderStore writes, lists, reads, and checks objects", async () => {
   const root = await mkdtemp(join(tmpdir(), "rooted-store-"));
