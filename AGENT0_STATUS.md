@@ -1,46 +1,34 @@
-# Agent0 Status
+# Agent0 Status: Rooted / OwnPlace demo
 
-Date: 2026-09-19
+Date: 2026-09-19 (updated post PR #5). Host: srv1611290, workspace /root/.hermes/workspace/rooted-ownplace-demo. Repo: MkultraUSA/rooted-ownplace-demo (public).
 
-## Changed
+## What works now
 
-- Built the smallest runnable Rooted / OwnPlace TypeScript demo in this workspace.
-- Added protocol types, canonical JSON, deterministic SHA-256 hashes, and explicit demo-only signing metadata.
-- Added `LocalFolderStore` and provider adapter scaffolds.
-- Added the creator bot, which publishes the same Kinfolk story package to `nextcloud-sim` and `google-drive-sim`.
-- Added the Vite/React OwnPlace UI, tests, README, architecture docs, and Google Drive authorization notes.
-- Added the root Vite production `build` script.
+- TypeScript monorepo: protocol (canonical JSON, SHA-256, demo-placeholder signing), storage (LocalFolderStore + real WebDavStore + Drive scaffold), creator-bot, client-sims, OwnPlace web (React+Vite).
+- `npm run publish`: sims always; kevcloud WebDAV when KEVCLOUD_* set; Drive via rclone when GOOGLE_DRIVE_SYNC=1. Skips reported, never faked.
+- `npm run parity`: 4-way fingerprint match across nextcloud-sim, google-drive-sim, kevcloud, google-drive. Proven live: identical fingerprint on all 4.
+- `npm run verify`: sim-only cross-check. `npm test`: 13 pass + 1 skip (opt-in live kevcloud test). `tsc --noEmit` clean. `npm run build` clean.
+- ownplace-web.service (systemd): serves dist on 127.0.0.1:8091, enabled, Restart=always.
+- Live backends: kevcloud `Rooted-OwnPlace-Demo/` (Nextcloud 33.0.9, WebDAV 207/201), Drive `Rooted OwnPlace Demo` (rclone rooted_drive:, scope drive.file).
 
-## Run
+## Review lane (proven over PRs #1-5)
 
-```sh
-npm install
-npm run publish
-npm run web
-npm test
-npm run build
-```
+- Radics pushes `radics/*` branches (code only — never `.github/workflows/`, house rule; Radics token lacks `workflow` scope, MkultraUSA owns CI config).
+- Independent blind review per PR (REQUEST-CHANGES twice, all findings fixed, re-review APPROVED).
+- Ruleset `review-lane-main`: PR + 1 approving review + green `demo` check + no force-push/deletion on main.
+- CI (`.github/workflows/ci.yml`): npm ci, tsc, test, publish, verify, diff -r, build on Node 20.
+- Telegram (@nukOmarchybot) pings MkultraUSA (id 5167192433) on PR-ready/merge-verified.
 
-Open the URL printed by Vite, normally `http://localhost:5173`.
+## Credentials
 
-## Passed
+None in repo. Drive token: /root/.config/rclone/rclone.conf (600, VPS only). kevcloud app password: local Agent0 rclone.conf only, passed via SSH env for one-shot publishes. Telegram token: chat + Hostinger env only.
 
-- Agent0 OpenCode smoke test: `OK`.
-- Hostinger OpenCode smoke test: `OK`.
-- `npm test`: 4 tests passed.
-- `npm run publish`: passed and wrote both simulated stores.
-- `npm run build`: passed.
-- Recursive diff and SHA-256 comparison: all four package files match between both stores.
-- Live Vite smoke test: UI and both story JSON endpoints served successfully.
-- `rclone lsd rooted_drive:`: `Rooted OwnPlace Demo` is visible.
+## Naming
 
-## Blocked / Deferred
+Rooted (project), OwnPlace (app), Kinfolk (users), Super Secret Social Network (prior concept). No "Soical" typo.
 
-- No real Nextcloud WebDAV or Google Drive API integration is enabled yet. The demo uses local-folder simulations by design.
-- Real provider authorization requires a user-authorized OAuth/rclone flow and restrictive token storage, as documented in `docs/google-drive-access.md`.
-- Signing and encryption are not claimed: only SHA-256 hashing is real in this demo.
+## Next
 
-## Next Actions
-
-- If desired, authorize a dedicated `rooted_drive` OAuth/rclone remote and implement the Google Drive adapter behind the existing storage interface.
-- Add WebDAV credentials through a separate, user-authorized configuration and implement the WebDAV adapter.
+- WebDAV hardening follow-ups (prefix-slice, decode-once, probe cleanup).
+- Public URL for OwnPlace web (nginx location or Tailscale serve).
+- Real remote-merge from Telegram (currently verify-only).
