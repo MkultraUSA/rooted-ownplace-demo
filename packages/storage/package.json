@@ -1,0 +1,4 @@
+{
+  "name": "@rooted/storage", "version": "0.1.0", "type": "module",
+  "exports": { ".": "./src/index.ts" }, "dependencies": { "@rooted/protocol": "0.1.0" }
+}
