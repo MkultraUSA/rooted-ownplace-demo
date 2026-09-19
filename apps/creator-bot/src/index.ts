@@ -7,7 +7,7 @@ import { LocalFolderStore } from "@rooted/storage";
 // Repo root resolved from this file: `npm run publish` executes tsx with
 // cwd at the repo root, but tests spawn it with cwd elsewhere — be explicit.
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const root = resolve(repoRoot, "demo/stores");
+const root = process.env.PUBLISH_ROOT ? resolve(process.env.PUBLISH_ROOT) : resolve(repoRoot, "demo/stores");
 const kinfolk: Kinfolk = { id: "kinfolk-alex", displayName: "Alex Rowan", bio: "Building a more rooted internet." };
 const story: Story = { id: "story-first-light", title: "First light at the workshop", body: "A small place can hold a big beginning. Today we opened the doors, shared a meal, and made room for one another.", media: [], authorId: kinfolk.id, createdAt: "2026-09-19T09:00:00.000Z" };
 const packageId = "rooted-demo-first-light";

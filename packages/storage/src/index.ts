@@ -1,5 +1,5 @@
 import { mkdir, readdir, readFile, writeFile, access } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 
 export interface ObjectStore {
   listObjects(prefix?: string): Promise<string[]>;
@@ -10,6 +10,13 @@ export interface ObjectStore {
 
 export class LocalFolderStore implements ObjectStore {
   constructor(public readonly root: string) {}
+  private resolve(path: string): string {
+    if (!path || path.startsWith("/") || path.includes("\\")) throw new Error(`unsafe store path: ${path}`);
+    const target = resolve(this.root, path);
+    const rel = relative(resolve(this.root), target);
+    if (rel === "" || rel.startsWith("..") || rel.includes("../")) throw new Error(`store path escapes root: ${path}`);
+    return target;
+  }
   async listObjects(prefix = ""): Promise<string[]> {
     const walk = async (folder: string): Promise<string[]> => {
       const entries = await readdir(folder, { withFileTypes: true }).catch(() => []);
@@ -23,14 +30,16 @@ export class LocalFolderStore implements ObjectStore {
     };
     return (await walk(this.root)).filter((path) => path.startsWith(prefix));
   }
-  readObject(path: string): Promise<Uint8Array> { return readFile(join(this.root, path)); }
+  readObject(path: string): Promise<Uint8Array> { return readFile(this.resolve(path)); }
   async writeObject(path: string, bytes: Uint8Array): Promise<void> {
-    const target = join(this.root, path);
+    const target = this.resolve(path);
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, bytes);
   }
   async exists(path: string): Promise<boolean> {
-    return access(join(this.root, path)).then(() => true, () => false);
+    let target: string;
+    try { target = this.resolve(path); } catch { return false; }
+    return access(target).then(() => true, () => false);
   }
 }
 
