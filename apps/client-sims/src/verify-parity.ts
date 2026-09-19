@@ -157,39 +157,51 @@ async function readTimelineIds(
   store: LocalFolderStore,
   label: string,
   problems: string[]
-): Promise<string[] | null> {
+): Promise<{ ids: string[] | null; malformed: boolean }> {
   let index: { stories?: unknown };
   try {
     index = JSON.parse(new TextDecoder().decode(await store.readObject("timeline.json")));
   } catch {
-    return null; // no timeline yet: not a mismatch, just empty
+    return { ids: null, malformed: false }; // no timeline yet: not a mismatch, just empty
   }
   if (!index || !Array.isArray(index.stories)) {
     problems.push(`${label}: timeline.json is malformed`);
-    return [];
+    return { ids: [], malformed: true };
   }
   const ids: string[] = [];
+  let malformed = false;
+  const seen = new Set<string>();
   for (const s of index.stories as { id?: unknown }[]) {
-    if (typeof s?.id !== "string") {
+    if (typeof s?.id !== "string" || s.id.length === 0) {
       problems.push(`${label}: timeline has malformed entry`);
+      malformed = true;
       continue;
     }
+    if (seen.has(s.id)) {
+      problems.push(`${label}: timeline has duplicate entry ${s.id}`);
+      malformed = true;
+      continue;
+    }
+    seen.add(s.id);
     ids.push(s.id);
   }
-  return ids;
+  return { ids, malformed };
 }
 
 async function compareTimelines(storesRoot: string): Promise<string[]> {
   const problems: string[] = [];
-  const { LocalFolderStore: LFS } = await import("@rooted/storage");
   const a = await readTimelineIds(
-    new LFS(resolve(storesRoot, "nextcloud-sim")), "nextcloud-sim", problems
+    new LocalFolderStore(resolve(storesRoot, "nextcloud-sim")), "nextcloud-sim", problems
   );
   const b = await readTimelineIds(
-    new LFS(resolve(storesRoot, "google-drive-sim")), "google-drive-sim", problems
+    new LocalFolderStore(resolve(storesRoot, "google-drive-sim")), "google-drive-sim", problems
   );
-  if (a === null || b === null) return problems; // at least one side empty: nothing to compare
-  if (a.length !== b.length || !a.every((id, i) => id === b[i])) {
+  const aIds: string[] | null = a.ids;
+  const bIds: string[] | null = b.ids;
+  if (aIds === null || bIds === null) return problems; // at least one side empty: nothing to compare
+  // A malformed side already reported specifics; the generic diff adds no signal.
+  if (a.malformed || b.malformed) return problems;
+  if (aIds.length !== bIds.length || !aIds.every((id, i) => id === bIds[i])) {
     problems.push("cross-backend mismatch: timeline indexes differ");
   }
   return problems;
