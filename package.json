@@ -15,7 +15,8 @@
     "web": "vite --config apps/ownplace-web/vite.config.ts",
     "build": "vite build --config apps/ownplace-web/vite.config.ts",
     "test": "tsx --test packages/*/test/*.test.ts apps/*/test/*.test.ts",
-    "verify": "npm --workspace apps/client-sims run verify"
+    "verify": "npm --workspace apps/client-sims run verify",
+    "parity": "npm --workspace apps/client-sims run parity"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
