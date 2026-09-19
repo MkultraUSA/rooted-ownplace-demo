@@ -1,1 +1,12 @@
-{ "name": "@rooted/creator-bot", "version": "0.1.0", "type": "module", "dependencies": { "@rooted/protocol": "0.1.0", "@rooted/storage": "0.1.0" } }
+{
+  "name": "@rooted/creator-bot",
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "@rooted/protocol": "0.1.0",
+    "@rooted/storage": "0.1.0"
+  },
+  "scripts": {
+    "post": "tsx src/post.ts"
+  }
+}
