@@ -9,6 +9,16 @@ import { verifyParity } from "../src/verify-parity.js";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 test("verifyParity passes on fresh sims without cloud env", async () => {
+  // Fresh-checkout proof: seed the sims first (CI starts from an empty tree
+  // since demo/stores/*/ is gitignored). Seeding here keeps the test
+  // self-contained instead of depending on test order or prior publish.
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const runLocal = promisify(execFile);
+  await runLocal(process.execPath, ["--import", "tsx", "apps/creator-bot/src/index.ts"], {
+    cwd: repoRoot,
+    env: { ...process.env, PUBLISH_ROOT: undefined, KEVCLOUD_WEBDAV_URL: "", GOOGLE_DRIVE_SYNC: "" },
+  });
   const saved = { ...process.env };
   delete process.env.KEVCLOUD_WEBDAV_URL;
   delete process.env.KEVCLOUD_WEBDAV_USER;
