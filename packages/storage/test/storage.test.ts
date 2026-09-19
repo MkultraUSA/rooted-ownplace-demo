@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LocalFolderStore } from "../src/index.js";
+import { LocalFolderStore, WebDavStore } from "../src/index.js";
 
 test("LocalFolderStore writes, lists, reads, and checks objects", async () => {
   const root = await mkdtemp(join(tmpdir(), "rooted-store-"));
@@ -15,4 +15,33 @@ test("LocalFolderStore writes, lists, reads, and checks objects", async () => {
     assert.equal(await store.exists("nested/story.json"), true);
     assert.equal(await store.exists("missing"), false);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("WebDavStore refuses unsafe paths without network", async () => {
+  const store = new WebDavStore({ baseUrl: "https://example.invalid/remote.php/dav/files/u/", username: "u", password: "p" });
+  await assert.rejects(() => store.writeObject("../../evil.txt", new TextEncoder().encode("x")), /escapes root|unsafe/);
+  await assert.rejects(() => store.readObject("/abs.txt"), /escapes root|unsafe/);
+  assert.equal(await store.exists("../../evil.txt").catch(() => false), false);
+});
+
+test("WebDavStore requires credentials (never committed)", () => {
+  assert.throws(() => new WebDavStore({ baseUrl: "", username: "", password: "" }), /requires baseUrl, username, password/);
+});
+
+// Live kevcloud test: runs ONLY when KEVCLOUD_WEBDAV_URL/USER/PASS are set
+// (Hostinger one-shot or local dev with app password). Skipped in CI.
+test("WebDavStore round-trips against live kevcloud (opt-in)", async (t) => {
+  const { KEVCLOUD_WEBDAV_URL: url, KEVCLOUD_WEBDAV_USER: user, KEVCLOUD_WEBDAV_PASS: pass } = process.env;
+  if (!url || !user || !pass) {
+    t.skip("KEVCLOUD_* not set — live WebDAV test skipped");
+    return;
+  }
+  const store = new WebDavStore({ baseUrl: url, username: user, password: pass });
+  const probe = `rooted-probe/${Date.now()}.json`;
+  const payload = new TextEncoder().encode(JSON.stringify({ hello: "kinfolk" }));
+  await store.writeObject(probe, payload);
+  assert.equal(await store.exists(probe), true);
+  assert.deepEqual(await store.readObject(probe), payload);
+  const listed = await store.listObjects("rooted-probe");
+  assert.ok(listed.includes(probe), `expected ${probe} in ${listed.join(",")}`);
 });
