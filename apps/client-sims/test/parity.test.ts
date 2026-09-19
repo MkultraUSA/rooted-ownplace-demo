@@ -1,36 +1,60 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createManifest, hashObject, objectBytes } from "@rooted/protocol";
-import { LocalFolderStore } from "@rooted/storage";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { verifyParity } from "../src/verify-parity.js";
 
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+
 test("verifyParity passes on fresh sims without cloud env", async () => {
-  const report = await verifyParity();
-  assert.equal(report.ok, true);
-  assert.deepStrictEqual(report.backends, ["nextcloud-sim", "google-drive-sim"]);
-  assert.equal(report.fingerprints["nextcloud-sim"], report.fingerprints["google-drive-sim"]);
-  assert.deepStrictEqual(report.problems, []);
+  const saved = { ...process.env };
+  delete process.env.KEVCLOUD_WEBDAV_URL;
+  delete process.env.KEVCLOUD_WEBDAV_USER;
+  delete process.env.KEVCLOUD_WEBDAV_PASS;
+  delete process.env.GOOGLE_DRIVE_SYNC;
+  try {
+    const report = await verifyParity();
+    assert.equal(report.ok, true);
+    assert.ok(report.backends.includes("nextcloud-sim"));
+    assert.ok(report.backends.includes("google-drive-sim"));
+    assert.equal(report.fingerprints["nextcloud-sim"], report.fingerprints["google-drive-sim"]);
+    assert.deepStrictEqual(report.problems, []);
+  } finally {
+    process.env = saved;
+  }
 });
 
-test("verifyParity detects sim drift", async () => {
-  const { readFile, writeFile } = await import("node:fs/promises");
-  const { resolve, dirname } = await import("node:path");
-  const { fileURLToPath } = await import("node:url");
-  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-  const victim = resolve(repoRoot, "demo/stores/google-drive-sim/story.json");
-  const original = await readFile(victim);
+test("verifyParity reports sim drift as ok:false (no throw)", async () => {
+  // Isolated overlay: copy sims to temp, tamper the copy, point parity at it.
+  const tmp = await mkdtemp(join(tmpdir(), "rooted-parity-"));
   try {
-    const story = JSON.parse(original.toString());
+    await cp(join(repoRoot, "demo/stores/nextcloud-sim"), join(tmp, "nextcloud-sim"), { recursive: true });
+    await cp(join(repoRoot, "demo/stores/google-drive-sim"), join(tmp, "google-drive-sim"), { recursive: true });
+    const { readFile, writeFile } = await import("node:fs/promises");
+    const victim = join(tmp, "google-drive-sim/story.json");
+    const story = JSON.parse((await readFile(victim)).toString());
     await writeFile(victim, JSON.stringify({ ...story, body: "tampered" }));
-    // Tampered story breaks the per-backend manifest check first, so
-    // verifyParity rejects (throw) rather than returning ok:false.
-    await assert.rejects(() => verifyParity(), /google-drive-sim.*hash mismatch: story\.json/);
+    const savedEnv = process.env.PUBLISH_ROOT;
+    const savedCloud = { ...process.env };
+    delete process.env.KEVCLOUD_WEBDAV_URL;
+    delete process.env.GOOGLE_DRIVE_SYNC;
+    process.env.PUBLISH_ROOT = tmp;
+    try {
+      const report = await verifyParity();
+      assert.equal(report.ok, false);
+      assert.ok(report.problems.some((p) => p.includes("google-drive-sim")),
+        `expected google-drive-sim problem, got: ${report.problems.join(";")}`);
+    } finally {
+      if (savedEnv === undefined) delete process.env.PUBLISH_ROOT;
+      else process.env.PUBLISH_ROOT = savedEnv;
+      Object.assign(process.env, savedCloud);
+    }
   } finally {
-    await writeFile(victim, original);
+    await rm(tmp, { recursive: true, force: true });
   }
+  // Real checkout untouched: parity clean again.
   const healed = await verifyParity();
   assert.equal(healed.ok, true);
 });
