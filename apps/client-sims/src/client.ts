@@ -22,7 +22,7 @@ export class KinfolkClient {
     for (const f of FILES) {
       let text: string;
       try {
-        text = (await this.store.readObject(f)).toString();
+        text = new TextDecoder().decode(await this.store.readObject(f)); // NOTE: Buffer.toString() works but raw Uint8Array.toString() joins bytes as CSV — always decode explicitly.
       } catch (e) {
         problems.push(`missing unreadable file: ${f} (${(e as Error).message})`);
         continue;
