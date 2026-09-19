@@ -22,6 +22,7 @@ Signing and encryption are deliberately not faked: the demo uses real determinis
 - `packages/protocol`: Kinfolk, story, manifest, signature types and canonical hashing.
 - `packages/storage`: `ObjectStore` and `LocalFolderStore`, with WebDAV and Google Drive scaffolds.
 - `apps/creator-bot`: sample package publisher.
+- `apps/client-sims`: headless Kinfolk clients that verify both stores (hashes, signature, cross-backend match).
 - `apps/ownplace-web`: Vite/React reader for both simulations.
 - `docs/architecture.md`: data flow and adapter boundary.
 - `docs/google-drive-access.md`: safe future authorization procedure.

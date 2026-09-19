@@ -2,16 +2,25 @@
   "name": "rooted-ownplace-demo",
   "private": true,
   "version": "0.1.0",
-  "engines": { "node": ">=18" },
-  "workspaces": ["packages/*", "apps/*"],
+  "engines": {
+    "node": ">=18"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
     "install:demo": "npm install",
     "publish": "tsx apps/creator-bot/src/index.ts",
     "web": "vite --config apps/ownplace-web/vite.config.ts",
     "build": "vite build --config apps/ownplace-web/vite.config.ts",
-    "test": "tsx --test packages/*/test/*.test.ts apps/*/test/*.test.ts"
+    "test": "tsx --test packages/*/test/*.test.ts apps/*/test/*.test.ts",
+    "verify": "npm --workspace apps/client-sims run verify"
   },
   "devDependencies": {
+    "@types/node": "^26.6.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^4.3.1",
     "tsx": "^4.19.1",
     "typescript": "^5.6.2",

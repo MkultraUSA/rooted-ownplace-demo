@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canonicalJson, hashObject, objectBytes, createManifest } from "../src/index.ts";
+import { canonicalJson, hashObject, objectBytes, createManifest } from "../src/index.js";
 
 test("canonical JSON and hashes do not depend on object key order", () => {
   assert.equal(canonicalJson({ z: 1, a: "two" }), '{"a":"two","z":1}');
