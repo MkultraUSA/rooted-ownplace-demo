@@ -13,7 +13,7 @@
 //   {kinfolk,story,manifest,signature}.json  (flat copy of latest; keeps
 //     verify-feed / verify-parity / web legacy readers working)
 
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
@@ -33,7 +33,12 @@ const run = promisify(execFile);
 
 function arg(name: string): string | undefined {
   const idx = process.argv.indexOf(`--${name}`);
-  return idx >= 0 ? process.argv[idx + 1] : undefined;
+  if (idx < 0) return undefined;
+  const value = process.argv[idx + 1];
+  // A missing value (end of args or another --flag) must not be swallowed:
+  // `--title --body x` must fail, not post a story titled "--body".
+  if (value === undefined || value.startsWith("--")) return undefined;
+  return value;
 }
 
 const title = arg("title");
@@ -44,11 +49,13 @@ if (!title || !title.trim() || !body || !body.trim()) {
   );
   process.exit(2);
 }
-if (title.length > 140) {
+const cleanTitle = title.trim();
+const cleanBody = body.trim();
+if (cleanTitle.length > 140) {
   console.error("title too long: max 140 characters");
   process.exit(2);
 }
-if (body.length > 5000) {
+if (cleanBody.length > 5000) {
   console.error("body too long: max 5000 characters");
   process.exit(2);
 }
@@ -69,8 +76,8 @@ const storyId = `story-${now.slice(0, 10)}-${randomBytes(4).toString("hex")}`;
 const kinfolk: Kinfolk = { id: authorId, displayName: authorName };
 const story: Story = {
   id: storyId,
-  title: title.trim(),
-  body: body.trim(),
+  title: cleanTitle,
+  body: cleanBody,
   media: [],
   authorId: kinfolk.id,
   createdAt: now,
@@ -105,7 +112,52 @@ interface TimelineIndex {
   stories: TimelineEntry[];
 }
 
-async function readIndex(store: ObjectStore): Promise<TimelineIndex> {
+function isEntry(s: unknown): s is TimelineEntry {
+  if (typeof s !== "object" || s === null) return false;
+  const e = s as Record<string, unknown>;
+  return (
+    typeof e.id === "string" && e.id.length > 0 &&
+    typeof e.title === "string" &&
+    typeof e.authorId === "string" && e.authorId.length > 0 &&
+    typeof e.createdAt === "string" && !Number.isNaN(Date.parse(e.createdAt))
+  );
+}
+
+// Rebuild the index from on-disk history: list timeline/<id>/story.json
+// objects via the store interface (works for local + WebDAV alike).
+async function rebuildIndex(store: ObjectStore, label: string): Promise<TimelineEntry[]> {
+  const entries: TimelineEntry[] = [];
+  let paths: string[] = [];
+  try {
+    paths = await store.listObjects("timeline/");
+  } catch {
+    return entries;
+  }
+  const ids = [...new Set(
+    paths.map((p) => p.split("/")[1]).filter((id) => typeof id === "string" && id.length > 0)
+  )];
+  for (const id of ids) {
+    try {
+      const story = JSON.parse(
+        new TextDecoder().decode(await store.readObject(`timeline/${id}/story.json`))
+      ) as Partial<Story>;
+      if (typeof story?.id === "string" && typeof story?.title === "string" &&
+          typeof story?.authorId === "string" && typeof story?.createdAt === "string") {
+        entries.push({ id: story.id, title: story.title, authorId: story.authorId, createdAt: story.createdAt });
+      }
+    } catch {
+      // unreadable history entry: skip, never fail the whole rebuild
+    }
+  }
+  if (entries.length > 0) console.log(`rebuilt ${label} index from ${entries.length} on-disk ${entries.length === 1 ? "story" : "stories"}`);
+  return entries;
+}
+
+function sortTimeline(stories: TimelineEntry[]): void {
+  stories.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+async function readIndex(store: ObjectStore, label: string): Promise<TimelineIndex> {
   try {
     const raw = new TextDecoder().decode(await store.readObject("timeline.json"));
     const parsed = JSON.parse(raw) as Partial<TimelineIndex>;
@@ -114,34 +166,35 @@ async function readIndex(store: ObjectStore): Promise<TimelineIndex> {
         protocol: "rooted/v0.1",
         kind: "timeline",
         updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : now,
-        stories: parsed.stories.filter(
-          (s): s is TimelineEntry =>
-            typeof s?.id === "string" && typeof s?.title === "string"
-        ),
+        stories: parsed.stories.filter(isEntry),
       };
     }
   } catch {
-    // missing or corrupt index: rebuild from scratch (single entry below)
+    // missing or unreadable index: fall through to rebuild
   }
-  return { protocol: "rooted/v0.1", kind: "timeline", updatedAt: now, stories: [] };
+  // Missing/corrupt index must not orphan on-disk history: rebuild it.
+  const rebuilt = await rebuildIndex(store, label);
+  return { protocol: "rooted/v0.1", kind: "timeline", updatedAt: now, stories: rebuilt };
 }
 
 async function publishToTimeline(label: string, store: ObjectStore): Promise<void> {
-  const index = await readIndex(store);
+  const index = await readIndex(store, label);
   if (!index.stories.some((s) => s.id === storyId)) {
     index.stories.push({ id: storyId, title: story.title, authorId: story.authorId, createdAt: now });
   }
-  index.stories.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  sortTimeline(index.stories);
   index.updatedAt = now;
   const indexBytes = new TextEncoder().encode(`${JSON.stringify(index)}\n`);
-  // History first, then index, then flat latest copy.
+  // History first, then flat latest copy, then the index last: a crash can
+  // only leave the index behind the data, never ahead of it (legacy readers
+  // use the flat copy, so they stay consistent).
   for (const [name, bytes] of Object.entries(files)) {
     await store.writeObject(`timeline/${storyId}/${name}`, bytes);
   }
-  await store.writeObject("timeline.json", indexBytes);
   for (const [name, bytes] of Object.entries(files)) {
     await store.writeObject(name, bytes);
   }
+  await store.writeObject("timeline.json", indexBytes);
   console.log(`posted ${storyId} to ${label} (timeline + latest)`);
 }
 
@@ -176,7 +229,8 @@ if (process.env.GOOGLE_DRIVE_SYNC === "1") {
   const remote = process.env.GOOGLE_DRIVE_REMOTE ?? "rooted_drive:";
   const folder = process.env.GOOGLE_DRIVE_FOLDER ?? "Rooted OwnPlace Demo";
   const src = resolve(root, "google-drive-sim") + "/";
-  await run("rclone", ["copy", src, `${remote}${folder}/`, "--timeout", "30s"]);
+  await run("rclone", ["copy", src, `${remote}${folder}/`, "--timeout", "30s"],
+    { timeout: 90000 }); // execFile-level guard: never hang the CLI on a stuck remote
   console.log(`posted ${storyId} to google-drive (rclone ${remote}${folder}/)`);
   published.push("google-drive");
 } else {
