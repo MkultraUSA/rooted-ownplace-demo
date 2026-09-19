@@ -1,3 +1,7 @@
+// LEGACY seed publisher (pre-timeline). Writes the single canned sample story
+// to the flat latest-copy paths. WARNING: it wipes per-backend directories
+// first, so it DELETES timeline/ history accumulated by `npm run post`.
+// Kept for CI seeding + first-run demo only; prefer `npm run post`.
 // Cloud publisher: writes the SAME story package to all configured backends:
 //   1. demo/stores/nextcloud-sim  (LocalFolderStore)
 //   2. demo/stores/google-drive-sim (LocalFolderStore)
