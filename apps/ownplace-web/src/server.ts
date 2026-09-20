@@ -14,6 +14,7 @@
 // POST/DELETE only; reads stay public. When the env var is unset, writes
 // are allowed locally with a console warning (dev convenience, not a claim).
 
+import { randomBytes } from "node:crypto";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -73,10 +74,55 @@ function send(res: http.ServerResponse, status: number, body: unknown, contentTy
   res.end(text);
 }
 
-function authorized(req: http.IncomingMessage): boolean {
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+// In-memory sessions: { token -> createdAt }. Single-operator demo;
+// sessions expire after 30 days of server uptime (restart clears all).
+const sessions = new Map<string, number>();
+const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
+
+function newSession(): string {
+  // CSPRNG session IDs: Math.random is predictable and must never mint secrets.
+  const token = randomBytes(32).toString("hex");
+  sessions.set(token, Date.now());
+  return token;
+}
+
+function readSessionCookie(req: http.IncomingMessage): string | null {
+  const header = req.headers.cookie ?? "";
+  for (const part of header.split(";")) {
+    const [k, ...rest] = part.trim().split("=");
+    if (k === "ownplace_session") return rest.join("=").trim() || null;
+  }
+  return null;
+}
+
+function destroySession(session: string): void {
+  sessions.delete(session);
+}
+
+function isAuthenticated(req: http.IncomingMessage): boolean {
   if (!writeToken) return true; // dev mode (warned at startup)
   const header = req.headers.authorization ?? "";
-  return header === `Bearer ${writeToken}`;
+  if (header.startsWith("Bearer ") && timingSafeEqual(header.slice(7), writeToken)) return true;
+  const session = readSessionCookie(req);
+  if (!session) return false;
+  const created = sessions.get(session);
+  if (created === undefined) return false;
+  if (Date.now() - created > SESSION_TTL_MS) {
+    sessions.delete(session);
+    return false;
+  }
+  return true;
+}
+
+function authorized(req: http.IncomingMessage): boolean {
+  return isAuthenticated(req);
 }
 
 const MIME: Record<string, string> = {
@@ -129,6 +175,41 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && pathname === "/api/contacts") {
       const list = await readContacts(simStore("nextcloud-sim"));
       send(res, 200, list);
+      return;
+    }
+    if (req.method === "GET" && pathname === "/api/session") {
+      send(res, 200, { authenticated: isAuthenticated(req) });
+      return;
+    }
+    if (req.method === "POST" && pathname === "/api/login") {
+      let input: unknown;
+      try {
+        input = await readJsonBody(req);
+      } catch {
+        send(res, 400, { error: "invalid JSON body" });
+        return;
+      }
+      const token = ((input ?? {}) as Record<string, unknown>).token;
+      if (typeof token !== "string" || !timingSafeEqual(token, writeToken) || !writeToken) {
+        send(res, 401, { error: "unauthorized" });
+        return;
+      }
+      const session = newSession();
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "set-cookie": `ownplace_session=${session}; HttpOnly; Path=/; SameSite=Lax`,
+      });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (req.method === "POST" && pathname === "/api/logout") {
+      const session = readSessionCookie(req);
+      if (session) destroySession(session);
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "set-cookie": "ownplace_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0",
+      });
+      res.end(JSON.stringify({ ok: true }));
       return;
     }
 
