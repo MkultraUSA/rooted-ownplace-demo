@@ -10,7 +10,8 @@
 //   POST /api/contacts    {id, displayName}  |  DELETE /api/contacts?id=ID
 //
 // Write auth: single-operator demo token via OWNPLACE_WRITE_TOKEN env.
-// Login mints an HttpOnly session cookie (Secure when COOKIE_SECURE=1);
+// Login mints an HttpOnly session cookie (Secure on HTTPS: forced via
+// COOKIE_SECURE=1 or auto-detected from X-Forwarded-Proto / TLS);
 // Bearer tokens are also accepted. POST/DELETE get 401 without auth;
 // reads stay public. When the env var is unset, writes are allowed locally
 // with a console warning (dev convenience, not a claim).
@@ -93,11 +94,20 @@ function sweepSessions(now = Date.now()): void {
   }
 }
 
-// COOKIE_SECURE=1 appends Secure so browsers only send the cookie over TLS.
-const cookieSecure = process.env.COOKIE_SECURE === "1";
-function sessionCookie(value: string | null): string {
+// Cookies: HttpOnly + SameSite=Lax always; Secure when COOKIE_SECURE=1
+// or when the request arrived over TLS (direct or via X-Forwarded-Proto).
+// Auto-detection keeps public HTTPS deploys safe when the operator
+// forgets the flag; plain-HTTP tailnet/local stays login-capable.
+const cookieSecureForced = process.env.COOKIE_SECURE === "1";
+function isTlsRequest(req: http.IncomingMessage): boolean {
+  const proto = (req.headers["x-forwarded-proto"] as string | undefined)?.split(",")[0]?.trim().toLowerCase();
+  if (proto === "https") return true;
+  return (req.socket as { encrypted?: boolean }).encrypted === true;
+}
+function sessionCookie(value: string | null, req?: http.IncomingMessage): string {
   const base = value === null ? "ownplace_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0" : "ownplace_session=" + value + "; HttpOnly; Path=/; SameSite=Lax";
-  return cookieSecure ? base + "; Secure" : base;
+  const secure = cookieSecureForced || (req !== undefined && isTlsRequest(req));
+  return secure ? base + "; Secure" : base;
 }
 
 function newSession(): string {
@@ -193,6 +203,10 @@ const server = http.createServer(async (req, res) => {
       send(res, 200, list);
       return;
     }
+    if (req.method === "GET" && pathname === "/api/health") {
+      send(res, 200, { ok: true });
+      return;
+    }
     if (req.method === "GET" && pathname === "/api/session") {
       send(res, 200, { authenticated: isAuthenticated(req) });
       return;
@@ -213,7 +227,7 @@ const server = http.createServer(async (req, res) => {
       const session = newSession();
       res.writeHead(200, {
         "content-type": "application/json",
-        "set-cookie": sessionCookie(session),
+        "set-cookie": sessionCookie(session, req),
       });
       res.end(JSON.stringify({ ok: true }));
       return;
@@ -223,7 +237,7 @@ const server = http.createServer(async (req, res) => {
       if (session) destroySession(session);
       res.writeHead(200, {
         "content-type": "application/json",
-        "set-cookie": sessionCookie(null),
+        "set-cookie": sessionCookie(null, req),
       });
       res.end(JSON.stringify({ ok: true }));
       return;
