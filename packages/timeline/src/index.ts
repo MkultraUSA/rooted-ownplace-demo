@@ -304,6 +304,29 @@ export async function fetchVerifiedHistoryPackage(store: ObjectStore, id: string
       problems.push(`public package must not contain ${ENTITLEMENTS_FILE}`);
     }
   }
+  // M4 entitled-vs-wrapped cross-check (fail closed): for gated packages with
+  // a well-formed sidecar + envelope, entitled[].readerId set must equal
+  // restricted.wrapped[].readerId set. Divergence is a collected problem
+  // (never a raw throw); public packages are unaffected.
+  if (
+    storyDoc &&
+    storyDoc.restricted !== undefined &&
+    entitlementsDoc !== undefined &&
+    isEntitlements(entitlementsDoc) &&
+    entitlementsDoc.storyId === id &&
+    isSealedBody(storyDoc.restricted)
+  ) {
+    const entitledIds = entitlementsDoc.entitled.map((e) => e.readerId);
+    const wrappedIds = (storyDoc.restricted as { wrapped: { readerId: string }[] }).wrapped.map((w) => w.readerId);
+    const entitledSet = new Set(entitledIds);
+    const wrappedSet = new Set(wrappedIds);
+    const sameSize =
+      entitledSet.size === entitledIds.length &&
+      wrappedSet.size === wrappedIds.length &&
+      entitledSet.size === wrappedSet.size;
+    const sameMembers = [...entitledSet].every((rid) => wrappedSet.has(rid));
+    if (!sameSize || !sameMembers) problems.push("entitlements/wrapped mismatch");
+  }
   // Directory/story/manifest binding: a valid signed package copied under a
   // different timeline/<id>/ directory must not verify. The enumerated (or
   // requested) directory id, signed story.id, and signed manifest.packageId
@@ -408,16 +431,24 @@ export function buildPackage(input: { title: string; body: string; authorId: str
     createdAt: input.createdAt,
   };
   const readers: EntitleReader[] = [...(opts.entitleReaders ?? []), ...(opts.entitle ? [opts.entitle] : [])];
-  // Slice-3 sidecar: ids only, no keys/secrets. Signed via the manifest like
-  // kinfolk/story so readers can discover entitlement without trial-decrypt.
+  // M4 cross-check + Slice-3 sidecar (ids only, no keys/secrets). Signed via
+  // the manifest like kinfolk/story so readers can discover entitlement
+  // without trial-decrypt. Combine legacy `entitle` + batch `entitleReaders`
+  // by readerId; duplicates fail fast so we never build an unverifiable pack.
   let entitlements: Entitlements | undefined;
   if (readers.length > 0) {
+    const seenReaderIds = new Set<string>();
     for (const r of readers) {
       if (!isSafeReaderId(r.readerId)) throw new Error("entitle reader id contains unsafe characters");
+      if (seenReaderIds.has(r.readerId)) throw new Error(`duplicate reader id: ${r.readerId}`);
+      seenReaderIds.add(r.readerId);
     }
     story.body = "";
     story.restricted = sealBodyForReaders(input.body, readers);
-    entitlements = { storyId: input.storyId, entitled: readers.map((r) => ({ readerId: r.readerId })) };
+    // Emit entitled[] exactly matching the sealed envelope wrapped[]
+    // readerIds, same order (derived from the envelope itself).
+    const sealed = story.restricted as { wrapped: { readerId: string }[] };
+    entitlements = { storyId: input.storyId, entitled: sealed.wrapped.map((w) => ({ readerId: w.readerId })) };
   }
   const manifest = createManifest(input.storyId, [
     { path: "kinfolk.json", contentType: "application/json", value: kinfolk },
