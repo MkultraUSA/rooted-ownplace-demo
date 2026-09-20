@@ -201,7 +201,14 @@ function Contacts() {
     }
   }
   async function remove(contactId: string) {
-    await fetch(`/api/contacts?id=${encodeURIComponent(contactId)}`, { method: "DELETE" });
+    if (!window.confirm(`Unfollow ${contactId}?`)) return;
+    setStatus("");
+    const res = await fetch(`/api/contacts?id=${encodeURIComponent(contactId)}`, { method: "DELETE" });
+    if (!res.ok) {
+      const parsed = (await safeJson(res)) as { error?: string } | null;
+      setStatus(`Couldn't remove: ${parsed?.error ?? res.status}`);
+      return;
+    }
     refresh();
   }
   return (

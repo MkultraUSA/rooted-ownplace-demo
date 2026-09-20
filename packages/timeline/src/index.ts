@@ -73,8 +73,10 @@ export function validateInput(input: StoryInput): { title: string; body: string;
   const cleanBody = body.trim();
   if (cleanTitle.length > TITLE_MAX) throw new Error(`title too long: max ${TITLE_MAX} characters`);
   if (cleanBody.length > BODY_MAX) throw new Error(`body too long: max ${BODY_MAX} characters`);
-  const authorId = (input.authorId ?? "kinfolk-alex").trim();
-  const authorName = (input.authorName ?? "Alex Rowan").trim();
+  const rawAuthorId = typeof input.authorId === "string" ? input.authorId : "kinfolk-alex";
+  const rawAuthorName = typeof input.authorName === "string" ? input.authorName : "Alex Rowan";
+  const authorId = rawAuthorId.trim();
+  const authorName = rawAuthorName.trim();
   if (!authorId || !authorName) throw new Error("author-id and author-name must be non-empty");
   if (authorId.includes("/") || authorId.includes("\\") || authorId.includes("..")) {
     throw new Error("author-id contains unsafe characters");

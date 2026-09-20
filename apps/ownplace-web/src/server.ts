@@ -32,7 +32,7 @@ import { LocalFolderStore } from "@rooted/storage";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = defaultRepoRoot();
-const distDir = path.resolve(here, "../../dist");
+const distDir = path.resolve(repoRoot, "apps/ownplace-web/dist"); // server lives in apps/ownplace-web/src/
 const port = Number(process.env.PORT ?? 8091);
 const writeToken = process.env.OWNPLACE_WRITE_TOKEN ?? "";
 
@@ -40,11 +40,19 @@ if (!writeToken) {
   console.warn("OWNPLACE_WRITE_TOKEN unset: write endpoints are open (local dev mode)");
 }
 
+// Single shared stores root for reads AND writes (backendsFromEnv):
+// with PUBLISH_ROOT set, API reads see what API/CLI writes, not stale data.
+const storesRoot = backendsFromEnv(repoRoot).root;
+
 function simStore(backend: string): LocalFolderStore {
   if (backend !== "nextcloud-sim" && backend !== "google-drive-sim") {
     throw new Error("unknown backend");
   }
-  return new LocalFolderStore(path.resolve(repoRoot, "demo/stores", backend));
+  return new LocalFolderStore(path.resolve(storesRoot, backend));
+}
+
+class BodyTooLargeError extends Error {
+  constructor() { super("body too large"); this.name = "BodyTooLargeError"; }
 }
 
 async function readJsonBody(req: http.IncomingMessage, limit = 32 * 1024): Promise<unknown> {
@@ -52,7 +60,7 @@ async function readJsonBody(req: http.IncomingMessage, limit = 32 * 1024): Promi
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > limit) throw new Error("body too large");
+    if (size > limit) throw new BodyTooLargeError();
     chunks.push(chunk as Buffer);
   }
   if (chunks.length === 0) return {};
@@ -86,6 +94,10 @@ const server = http.createServer(async (req, res) => {
     // --- Reads (public) ---
     if (req.method === "GET" && pathname === "/api/timeline") {
       const backend = url.searchParams.get("backend") ?? "nextcloud-sim";
+      if (backend !== "nextcloud-sim" && backend !== "google-drive-sim") {
+        send(res, 400, { error: "unknown backend" });
+        return;
+      }
       try {
         const raw = new TextDecoder().decode(await simStore(backend).readObject("timeline.json"));
         send(res, 200, JSON.parse(raw));
@@ -96,8 +108,12 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && pathname === "/api/story") {
       const backend = url.searchParams.get("backend") ?? "nextcloud-sim";
+      if (backend !== "nextcloud-sim" && backend !== "google-drive-sim") {
+        send(res, 400, { error: "unknown backend" });
+        return;
+      }
       const id = url.searchParams.get("id") ?? "";
-      if (!id || id.includes("/") || id.includes("..")) {
+      if (!id || id.includes("/") || id.includes("\\") || id.includes("..") || id.includes("\0")) {
         send(res, 400, { error: "bad id" });
         return;
       }
@@ -125,8 +141,12 @@ const server = http.createServer(async (req, res) => {
       let input: unknown;
       try {
         input = await readJsonBody(req);
-      } catch {
-        send(res, 400, { error: "invalid JSON body" });
+      } catch (e) {
+        if (e instanceof BodyTooLargeError) {
+          send(res, 413, { error: "body too large" });
+        } else {
+          send(res, 400, { error: "invalid JSON body" });
+        }
         return;
       }
       const rec = (input ?? {}) as Record<string, unknown>;
@@ -153,12 +173,18 @@ const server = http.createServer(async (req, res) => {
       }
       const store = simStore("nextcloud-sim");
       if (req.method === "DELETE") {
-        const id = url.searchParams.get("id") ?? "";
-        if (!id) {
-          send(res, 400, { error: "id required" });
+        const id = (url.searchParams.get("id") ?? "").trim();
+        if (!id || id.includes("/") || id.includes("\\") || id.includes("..")) {
+          send(res, 400, { error: "bad id" });
           return;
         }
-        send(res, 200, await removeContact(store, id));
+        const before = (await readContacts(store)).contacts.length;
+        const list = await removeContact(store, id);
+        if (list.contacts.length === before) {
+          send(res, 404, { error: "contact not found" });
+          return;
+        }
+        send(res, 200, list);
         return;
       }
       let input: unknown;
@@ -181,12 +207,13 @@ const server = http.createServer(async (req, res) => {
     // --- Static bundle ---
     if (req.method === "GET") {
       const rel = pathname === "/" ? "index.html" : pathname.replace(/^\//, "").split("?")[0];
-      if (rel.includes("..")) {
+      const resolved = path.resolve(distDir, rel);
+      if (resolved !== distDir && !resolved.startsWith(distDir + path.sep)) {
         send(res, 400, { error: "bad path" });
         return;
       }
       try {
-        const data = await readFile(path.join(distDir, rel));
+        const data = await readFile(resolved);
         const ext = path.extname(rel);
         res.writeHead(200, { "content-type": MIME[ext] ?? "application/octet-stream" });
         res.end(data);
@@ -197,7 +224,8 @@ const server = http.createServer(async (req, res) => {
     }
     send(res, 405, { error: "method not allowed" });
   } catch (e) {
-    send(res, 500, { error: (e as Error).message });
+    console.error("request failed:", (e as Error).message);
+    send(res, 500, { error: "internal error" });
   }
 });
 
