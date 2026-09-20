@@ -45,3 +45,24 @@ test("WebDavStore round-trips against live kevcloud (opt-in)", async (t) => {
   const listed = await store.listObjects("rooted-probe");
   assert.ok(listed.includes(probe), `expected ${probe} in ${listed.join(",")}`);
 });
+
+test("LocalFolderStore deleteObject removes files and tolerates missing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rooted-store-del-"));
+  try {
+    const store = new LocalFolderStore(root);
+    await store.writeObject("entitlements.json", new TextEncoder().encode("stale"));
+    assert.equal(await store.exists("entitlements.json"), true);
+    await store.deleteObject("entitlements.json");
+    assert.equal(await store.exists("entitlements.json"), false);
+    await store.deleteObject("entitlements.json");
+    assert.equal(await store.exists("entitlements.json"), false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("LocalFolderStore deleteObject rejects unsafe paths", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rooted-store-del2-"));
+  try {
+    const store = new LocalFolderStore(root);
+    await assert.rejects(() => store.deleteObject("../../evil.txt"), /escapes root|unsafe/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

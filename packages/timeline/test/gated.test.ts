@@ -492,3 +492,98 @@ test("m4: verify rejects sidecar-id swap and wrapped-entry removal as collected 
     assert.equal(toPublicSkipReason(`${swapId}: entitlements/wrapped mismatch`), "invalid entitlements");
   });
 });
+
+test("m4 flat-copy: gated then public clears stale flat entitlements.json", async () => {
+  await withIdDir(async (dir) => {
+    const reader = x25519Pair();
+    const root = join(dir, "stores");
+    const gatedId = "story-flat-gated-1";
+    const publicId = "story-flat-public-1";
+    await publishStory(
+      { title: "Gated first", body: "paywalled words", authorId: "kinfolk-alex", authorName: "Alex" },
+      { root },
+      { createdAt: "2026-09-20T00:00:00.000Z", storyId: gatedId, entitle: { readerId: "reader-bob", readerPublicKey: reader.pub } }
+    );
+    for (const backend of ["nextcloud-sim", "google-drive-sim"]) {
+      const store = new LocalFolderStore(join(root, backend));
+      assert.equal(await store.exists("entitlements.json"), true);
+      const flat = JSON.parse(new TextDecoder().decode(await store.readObject("entitlements.json")));
+      assert.equal(flat.storyId, gatedId);
+    }
+    await publishStory(
+      { title: "Public second", body: "everyone reads", authorId: "kinfolk-alex", authorName: "Alex" },
+      { root },
+      { createdAt: "2026-09-20T00:00:01.000Z", storyId: publicId }
+    );
+    for (const backend of ["nextcloud-sim", "google-drive-sim"]) {
+      const store = new LocalFolderStore(join(root, backend));
+      assert.equal(await store.exists("entitlements.json"), false);
+      const gatedPkg = await fetchVerifiedHistoryPackage(store, gatedId);
+      assert.equal(gatedPkg.entitlements?.storyId, gatedId);
+      const publicPkg = await fetchVerifiedHistoryPackage(store, publicId);
+      assert.equal(publicPkg.entitlements, undefined);
+      assert.equal(publicPkg.story.body, "everyone reads");
+    }
+    const aFlat = await readFile(join(root, "nextcloud-sim", "story.json"), "utf8");
+    const bFlat = await readFile(join(root, "google-drive-sim", "story.json"), "utf8");
+    assert.equal(aFlat, bFlat);
+  });
+});
+
+test("m4 flat-copy: gated then gated rotates flat sidecar to latest story", async () => {
+  await withIdDir(async (dir) => {
+    const a = x25519Pair();
+    const b = x25519Pair();
+    const root = join(dir, "stores");
+    const firstId = "story-flat-gated-a";
+    const secondId = "story-flat-gated-b";
+    await publishStory(
+      { title: "Gated one", body: "first secret", authorId: "kinfolk-alex", authorName: "Alex" },
+      { root },
+      { createdAt: "2026-09-20T00:00:00.000Z", storyId: firstId, entitle: { readerId: "reader-a", readerPublicKey: a.pub } }
+    );
+    await publishStory(
+      { title: "Gated two", body: "second secret", authorId: "kinfolk-alex", authorName: "Alex" },
+      { root },
+      { createdAt: "2026-09-20T00:00:01.000Z", storyId: secondId, entitle: { readerId: "reader-b", readerPublicKey: b.pub } }
+    );
+    for (const backend of ["nextcloud-sim", "google-drive-sim"]) {
+      const store = new LocalFolderStore(join(root, backend));
+      assert.equal(await store.exists("entitlements.json"), true);
+      const flat = JSON.parse(new TextDecoder().decode(await store.readObject("entitlements.json")));
+      assert.equal(flat.storyId, secondId);
+      assert.deepStrictEqual(flat.entitled, [{ readerId: "reader-b" }]);
+      const firstPkg = await fetchVerifiedHistoryPackage(store, firstId);
+      assert.equal(firstPkg.entitlements?.storyId, firstId);
+      const secondPkg = await fetchVerifiedHistoryPackage(store, secondId);
+      assert.equal(secondPkg.entitlements?.storyId, secondId);
+    }
+    const aFlat = await readFile(join(root, "nextcloud-sim", "entitlements.json"), "utf8");
+    const bFlat = await readFile(join(root, "google-drive-sim", "entitlements.json"), "utf8");
+    assert.equal(aFlat, bFlat);
+  });
+});
+
+test("m4 flat-copy: public then public stays absent", async () => {
+  await withIdDir(async (dir) => {
+    const root = join(dir, "stores");
+    await publishStory(
+      { title: "Free one", body: "hello", authorId: "kinfolk-alex", authorName: "Alex" },
+      { root },
+      { createdAt: "2026-09-20T00:00:00.000Z", storyId: "story-flat-free-a" }
+    );
+    await publishStory(
+      { title: "Free two", body: "world", authorId: "kinfolk-alex", authorName: "Alex" },
+      { root },
+      { createdAt: "2026-09-20T00:00:01.000Z", storyId: "story-flat-free-b" }
+    );
+    for (const backend of ["nextcloud-sim", "google-drive-sim"]) {
+      const store = new LocalFolderStore(join(root, backend));
+      assert.equal(await store.exists("entitlements.json"), false);
+      const firstPkg = await fetchVerifiedHistoryPackage(store, "story-flat-free-a");
+      assert.equal(firstPkg.entitlements, undefined);
+      const secondPkg = await fetchVerifiedHistoryPackage(store, "story-flat-free-b");
+      assert.equal(secondPkg.entitlements, undefined);
+    }
+  });
+});
