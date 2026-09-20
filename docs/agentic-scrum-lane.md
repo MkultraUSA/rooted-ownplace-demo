@@ -1,7 +1,10 @@
 # System Design: Agentic Scrum Lane (overnight research synthesis)
 
-Companion to the `scrum-master` skill v2. What we run today, what research
-says to change, and what to adopt in which order. Sources: Scrum Guide 2020,
+Companion to the `scrum-master` skill v2 (lives outside this repo, on the
+Agent0 workstation at `~/.config/opencode/skills/scrum-master/SKILL.md` —
+section references like §0/§3.6 below point there, not to files here).
+What we run today, what research says to change, and what to adopt in
+which order. Sources: Scrum Guide 2020,
 Cohn/Mountain Goat, Scrum.org, Agile Alliance, Atlassian; Anthropic
 (Building Effective Agents, Multi-Agent Research, Long-Running Harnesses,
 Managed Agents, Code Migration, AI-Native SDLC, Code Review), Claude Code
@@ -51,7 +54,10 @@ scopes).
    keep the askpass/PAT path).
 - Sprint-0-style mega-setup PRs; hardening sprints (strengthen DoD instead).
 
-## 4. Mapping to skill v2 sections
+## 4. Mapping to skill v2 sections (skill lives on Agent0, not in repo)
+
+NOTE: session-checklist-as-code, reviewer tiers, and the other
+adoptions above are proposals until each lands as its own PR.
 
 Session checklist → §0; DEEP/INVEST/Ready/Done → §2; lifecycle+tiers → §3;
 judge-first verification → §4; impediments → §5; async events → §6;
