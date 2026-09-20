@@ -4,7 +4,8 @@
   "type": "module",
   "dependencies": {
     "@rooted/protocol": "0.1.0",
-    "@rooted/storage": "0.1.0"
+    "@rooted/storage": "0.1.0",
+    "@rooted/timeline": "0.1.0"
   },
   "scripts": {
     "post": "tsx src/post.ts"
