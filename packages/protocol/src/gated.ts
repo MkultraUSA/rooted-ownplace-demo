@@ -1,10 +1,12 @@
-// Sealed story bodies for single-reader paid gating (slice 1).
+// Sealed story bodies for multi-reader paid gating (slice 2).
 //
 // Demo-grade end-to-end confidentiality, NOT audited cryptography:
-// - Random 256-bit data key per story; body sealed with AES-256-GCM.
-// - Data key wrapped for exactly one reader via X25519 ECDH (NaCl-box style
-//   construction from Node primitives: ephemeral keypair, SHA-256 KDF,
-//   AES-256-GCM wrap). One wrapped key per story is the slice-1 scope.
+// - Random 256-bit data key per story; body sealed once with AES-256-GCM.
+// - SAME data key wrapped per entitled reader via X25519 ECDH (NaCl-box style
+//   construction from Node primitives: fresh ephemeral keypair PER READER,
+//   SHA-256 KDF, AES-256-GCM wrap). Fresh ephemeral per reader is chosen for
+//   hygiene: compromising one wrap's ephemeral does not help open other
+//   readers' entries, at the cost of a slightly larger envelope.
 // - Kinfolk keys stay separated by purpose: Ed25519 signs (identity, see
 //   index.ts), X25519 decrypts (confidentiality). Never mix the two.
 // - The envelope lives INSIDE story.json, so the manifest hash plus Ed25519
@@ -50,7 +52,13 @@ export interface SealedBody {
   algorithm: typeof GATED_ALGORITHM;
   bodyNonce: string;
   ciphertext: string;
-  wrapped: WrappedReaderKey;
+  wrapped: WrappedReaderKey[];
+}
+
+/** One entitled reader: compatible with timeline EntitleReader. */
+export interface SealReader {
+  readerId: string;
+  readerPublicKey: string;
 }
 
 export type OpenResult =
@@ -152,9 +160,18 @@ export function loadOrCreateEncryptionIdentity(
   return { privateKey, publicKey };
 }
 
-export function sealBody(plaintext: string, readerPublicKeyPem: string, readerId: string): SealedBody {
-  if (!isSafeReaderId(readerId)) throw new Error("unsafe reader id");
-  const readerPublic = loadX25519Public(readerPublicKeyPem, "reader public key");
+export function sealBodyForReaders(
+  plaintext: string,
+  readers: SealReader[],
+): SealedBody {
+  if (!Array.isArray(readers) || readers.length === 0) throw new Error("at least one reader required");
+  const seen = new Set<string>();
+  for (const r of readers) {
+    if (!r || !isSafeReaderId(r.readerId)) throw new Error("unsafe reader id");
+    if (seen.has(r.readerId)) throw new Error("duplicate reader id");
+    seen.add(r.readerId);
+    loadX25519Public(r.readerPublicKey, "reader public key");
+  }
   if (typeof plaintext !== "string" || plaintext.length === 0) throw new Error("body must be non-empty");
   const plainBytes = new TextEncoder().encode(plaintext);
   if (plainBytes.length > MAX_PLAINTEXT_BYTES) throw new Error("body too large to seal");
@@ -162,54 +179,67 @@ export function sealBody(plaintext: string, readerPublicKeyPem: string, readerId
   const bodyNonce = randomBytes(BODY_NONCE_BYTES);
   const bodyCipher = createCipheriv(GATED_ALGORITHM, dataKey, bodyNonce);
   const ciphertext = Buffer.concat([bodyCipher.update(plainBytes), bodyCipher.final(), bodyCipher.getAuthTag()]);
-  const ephemeral = generateKeyPairSync("x25519");
-  const ephemeralPublic = ephemeral.publicKey;
-  const shared = diffieHellman({ privateKey: ephemeral.privateKey, publicKey: readerPublic });
-  const kek = deriveKek(shared, rawPublicBytes(ephemeralPublic), rawPublicBytes(readerPublic));
-  const keyNonce = randomBytes(KEY_NONCE_BYTES);
-  const keyCipher = createCipheriv(GATED_ALGORITHM, kek, keyNonce);
-  const wrappedKey = Buffer.concat([keyCipher.update(dataKey), keyCipher.final(), keyCipher.getAuthTag()]);
-  dataKey.fill(0);
+  const wrapped: WrappedReaderKey[] = [];
+  try {
+    for (const r of readers) {
+      const readerPublic = loadX25519Public(r.readerPublicKey, "reader public key");
+      const ephemeral = generateKeyPairSync("x25519");
+      const ephemeralPublic = ephemeral.publicKey;
+      const shared = diffieHellman({ privateKey: ephemeral.privateKey, publicKey: readerPublic });
+      const kek = deriveKek(shared, rawPublicBytes(ephemeralPublic), rawPublicBytes(readerPublic));
+      const keyNonce = randomBytes(KEY_NONCE_BYTES);
+      const keyCipher = createCipheriv(GATED_ALGORITHM, kek, keyNonce);
+      const wrappedKey = Buffer.concat([keyCipher.update(dataKey), keyCipher.final(), keyCipher.getAuthTag()]);
+      wrapped.push({
+        readerId: r.readerId,
+        ephemeralPublicKey: ephemeralPublic.export({ type: "spki", format: "pem" }).toString(),
+        keyNonce: toB64(keyNonce),
+        wrappedKey: toB64(wrappedKey),
+      });
+    }
+  } finally {
+    dataKey.fill(0);
+  }
   return {
     algorithm: GATED_ALGORITHM,
     bodyNonce: toB64(bodyNonce),
     ciphertext: toB64(ciphertext),
-    wrapped: {
-      readerId,
-      ephemeralPublicKey: ephemeralPublic.export({ type: "spki", format: "pem" }).toString(),
-      keyNonce: toB64(keyNonce),
-      wrappedKey: toB64(wrappedKey),
-    },
+    wrapped,
   };
+}
+
+export function sealBody(plaintext: string, readerPublicKeyPem: string, readerId: string): SealedBody {
+  return sealBodyForReaders(plaintext, [{ readerId, readerPublicKey: readerPublicKeyPem }]);
+}
+
+function parseWrappedEntry(value: unknown): WrappedReaderKey {
+  if (!value || typeof value !== "object") throw new Error("gated envelope is malformed");
+  const wrapped = value as Record<string, unknown>;
+  if (!isSafeReaderId(wrapped.readerId)) throw new Error("gated envelope is malformed");
+  if (typeof wrapped.ephemeralPublicKey !== "string" || wrapped.ephemeralPublicKey.length === 0 || wrapped.ephemeralPublicKey.length > MAX_B64_CHARS) {
+    throw new Error("gated envelope is malformed");
+  }
+  for (const v of [wrapped.keyNonce, wrapped.wrappedKey]) {
+    if (typeof v !== "string" || v.length === 0 || v.length > MAX_B64_CHARS || !B64_RE.test(v)) {
+      throw new Error("gated envelope is malformed");
+    }
+  }
+  fromB64(wrapped.keyNonce, KEY_NONCE_BYTES);
+  const wk = fromB64(wrapped.wrappedKey);
+  if (wk.length !== DATA_KEY_BYTES + GCM_TAG_BYTES) throw new Error("gated envelope is malformed");
+  loadX25519Public(wrapped.ephemeralPublicKey, "ephemeral key");
+  return value as WrappedReaderKey;
 }
 
 function parseEnvelope(envelope: unknown): SealedBody {
   if (!envelope || typeof envelope !== "object") throw new Error("gated envelope is malformed");
   const env = envelope as Record<string, unknown>;
-  const wrapped = env.wrapped as Record<string, unknown> | undefined;
-  if (
-    env.algorithm !== GATED_ALGORITHM ||
-    !wrapped ||
-    typeof wrapped !== "object" ||
-    !isSafeReaderId(wrapped.readerId)
-  ) {
-    throw new Error("gated envelope is malformed");
-  }
-  if (typeof wrapped.ephemeralPublicKey !== "string" || wrapped.ephemeralPublicKey.length === 0 || wrapped.ephemeralPublicKey.length > MAX_B64_CHARS) {
-    throw new Error("gated envelope is malformed");
-  }
-  for (const value of [wrapped.keyNonce, wrapped.wrappedKey]) {
-    if (typeof value !== "string" || value.length === 0 || value.length > MAX_B64_CHARS || !B64_RE.test(value)) {
-      throw new Error("gated envelope is malformed");
-    }
-  }
-  fromB64(wrapped.keyNonce, KEY_NONCE_BYTES);
+  if (env.algorithm !== GATED_ALGORITHM) throw new Error("gated envelope is malformed");
+  if (!Array.isArray(env.wrapped) || env.wrapped.length === 0) throw new Error("gated envelope is malformed");
+  const wrapped = env.wrapped.map(parseWrappedEntry);
   fromB64(env.bodyNonce, BODY_NONCE_BYTES);
   const ct = fromB64(env.ciphertext);
   if (ct.length < GCM_TAG_BYTES + 1) throw new Error("gated envelope is malformed");
-  const wk = fromB64(wrapped.wrappedKey);
-  if (wk.length !== DATA_KEY_BYTES + GCM_TAG_BYTES) throw new Error("gated envelope is malformed");
-  loadX25519Public(wrapped.ephemeralPublicKey, "ephemeral key");
   return envelope as SealedBody;
 }
 
@@ -227,34 +257,43 @@ export function isSealedBody(value: unknown): value is SealedBody {
 // Callers must present fixed UI strings for both, never crypto internals.
 export function unsealBody(envelope: unknown, readerPrivateKeyPem: string, readerId?: string): string {
   const env = parseEnvelope(envelope);
-  if (readerId !== undefined && env.wrapped.readerId !== readerId) {
+  if (readerId !== undefined && !env.wrapped.some((e) => e.readerId === readerId)) {
     throw new Error("not entitled to this story");
   }
   const readerPrivate = loadX25519Private(readerPrivateKeyPem, "reader encryption key");
-  try {
-    const ephemeralPublic = loadX25519Public(env.wrapped.ephemeralPublicKey, "ephemeral key");
-    const shared = diffieHellman({ privateKey: readerPrivate, publicKey: ephemeralPublic });
-    const kek = deriveKek(shared, rawPublicBytes(ephemeralPublic), rawPublicBytes(createPublicKey(readerPrivate)));
-    const wrappedKey = fromB64(env.wrapped.wrappedKey);
-    const keyDecipher = createDecipheriv(GATED_ALGORITHM, kek, fromB64(env.wrapped.keyNonce, KEY_NONCE_BYTES));
-    keyDecipher.setAuthTag(wrappedKey.subarray(DATA_KEY_BYTES));
-    const dataKey = Buffer.concat([
-      keyDecipher.update(wrappedKey.subarray(0, DATA_KEY_BYTES)),
-      keyDecipher.final(),
-    ]);
-    const bodyDecipher = createDecipheriv(GATED_ALGORITHM, dataKey, fromB64(env.bodyNonce, BODY_NONCE_BYTES));
-    const ct = fromB64(env.ciphertext);
-    bodyDecipher.setAuthTag(ct.subarray(ct.length - GCM_TAG_BYTES));
-    const plain = Buffer.concat([
-      bodyDecipher.update(ct.subarray(0, ct.length - GCM_TAG_BYTES)),
-      bodyDecipher.final(),
-    ]);
-    dataKey.fill(0);
-    return new TextDecoder().decode(plain);
-  } catch (e) {
-    if (e instanceof Error && e.message === "gated envelope is malformed") throw e;
-    throw new Error("not entitled to this story");
+  const readerRaw = rawPublicBytes(createPublicKey(readerPrivate));
+  const candidates =
+    readerId !== undefined ? env.wrapped.filter((e) => e.readerId === readerId) : env.wrapped;
+  for (const entry of candidates) {
+    let dataKey: Buffer | undefined;
+    try {
+      const ephemeralPublic = loadX25519Public(entry.ephemeralPublicKey, "ephemeral key");
+      const shared = diffieHellman({ privateKey: readerPrivate, publicKey: ephemeralPublic });
+      const kek = deriveKek(shared, rawPublicBytes(ephemeralPublic), readerRaw);
+      const wrappedKey = fromB64(entry.wrappedKey);
+      const keyDecipher = createDecipheriv(GATED_ALGORITHM, kek, fromB64(entry.keyNonce, KEY_NONCE_BYTES));
+      keyDecipher.setAuthTag(wrappedKey.subarray(DATA_KEY_BYTES));
+      dataKey = Buffer.concat([
+        keyDecipher.update(wrappedKey.subarray(0, DATA_KEY_BYTES)),
+        keyDecipher.final(),
+      ]);
+      const bodyDecipher = createDecipheriv(GATED_ALGORITHM, dataKey, fromB64(env.bodyNonce, BODY_NONCE_BYTES));
+      const ct = fromB64(env.ciphertext);
+      bodyDecipher.setAuthTag(ct.subarray(ct.length - GCM_TAG_BYTES));
+      const plain = Buffer.concat([
+        bodyDecipher.update(ct.subarray(0, ct.length - GCM_TAG_BYTES)),
+        bodyDecipher.final(),
+      ]);
+      const out = new TextDecoder().decode(plain);
+      dataKey.fill(0);
+      return out;
+    } catch (e) {
+      if (dataKey) dataKey.fill(0);
+      if (e instanceof Error && e.message === "gated envelope is malformed") throw e;
+      continue;
+    }
   }
+  throw new Error("not entitled to this story");
 }
 
 // Display helper: fixed statuses, never crypto internals. A gated story

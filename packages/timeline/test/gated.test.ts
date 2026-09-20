@@ -149,3 +149,89 @@ test("public posts are unchanged by the gating slice", async () => {
     assert.equal(tryOpenStory(pkg.story).status, "public");
   });
 });
+test("multi-reader build opens for each entitled reader; stranger blocked", async () => {
+  await withIdDir(async () => {
+    const a = x25519Pair();
+    const b = x25519Pair();
+    const c = x25519Pair();
+    const stranger = x25519Pair();
+    const pkg = buildPackage(
+      {
+        title: "Paid post", body: "paywalled words", authorId: "kinfolk-alex",
+        authorName: "Alex", createdAt: "2026-09-20T00:00:00.000Z", storyId: "story-gated-multi-1",
+      },
+      {
+        entitleReaders: [
+          { readerId: "reader-a", readerPublicKey: a.pub },
+          { readerId: "reader-b", readerPublicKey: b.pub },
+          { readerId: "reader-c", readerPublicKey: c.pub },
+        ],
+      },
+    );
+    assert.equal(pkg.story.body, "");
+    assert.equal(isSealedBody(pkg.story.restricted), true);
+    assert.equal(
+      (pkg.story.restricted as { wrapped: unknown[] }).wrapped.length,
+      3,
+    );
+    for (const [pair, id] of [[a, "reader-a"], [b, "reader-b"], [c, "reader-c"]] as const) {
+      const opened = tryOpenStory(pkg.story, pair.priv, id);
+      assert.equal(opened.status, "opened");
+      assert.equal((opened as { body: string }).body, "paywalled words");
+    }
+    assert.equal(tryOpenStory(pkg.story, stranger.priv, "stranger-x").status, "not-entitled");
+    assert.equal(tryOpenStory(pkg.story).status, "restricted");
+    // Legacy single entitle still works alongside entitleReaders (combined).
+    const combined = buildPackage(
+      {
+        title: "Paid post", body: "paywalled words", authorId: "kinfolk-alex",
+        authorName: "Alex", createdAt: "2026-09-20T00:00:00.000Z", storyId: "story-gated-multi-2",
+      },
+      {
+        entitle: { readerId: "reader-a", readerPublicKey: a.pub },
+        entitleReaders: [{ readerId: "reader-b", readerPublicKey: b.pub }],
+      },
+    );
+    assert.equal((combined.story.restricted as { wrapped: unknown[] }).wrapped.length, 2);
+    assert.equal(tryOpenStory(combined.story, a.priv, "reader-a").status, "opened");
+    assert.equal(tryOpenStory(combined.story, b.priv, "reader-b").status, "opened");
+  });
+});
+
+test("multi-reader publish lands identical bytes on both sims", async () => {
+  await withIdDir(async (dir) => {
+    const a = x25519Pair();
+    const b = x25519Pair();
+    const c = x25519Pair();
+    const stranger = x25519Pair();
+    const root = join(dir, "stores");
+    const res = await publishStory(
+      { title: "Paid post", body: "paywalled words", authorId: "kinfolk-alex", authorName: "Alex" },
+      { root },
+      {
+        createdAt: "2026-09-20T00:00:00.000Z",
+        storyId: "story-gated-multi-3",
+        entitleReaders: [
+          { readerId: "reader-a", readerPublicKey: a.pub },
+          { readerId: "reader-b", readerPublicKey: b.pub },
+          { readerId: "reader-c", readerPublicKey: c.pub },
+        ],
+      },
+    );
+    assert.ok(res.backends.includes("nextcloud-sim"));
+    assert.ok(res.backends.includes("google-drive-sim"));
+    const fa = await readFile(join(root, "nextcloud-sim/timeline/story-gated-multi-3/story.json"), "utf8");
+    const fb = await readFile(join(root, "google-drive-sim/timeline/story-gated-multi-3/story.json"), "utf8");
+    assert.equal(fa, fb);
+    for (const backend of ["nextcloud-sim", "google-drive-sim"]) {
+      const store = new LocalFolderStore(join(root, backend));
+      const story = (await fetchVerifiedHistoryPackage(store, "story-gated-multi-3")).story;
+      assert.equal(story.body, "");
+      for (const [pair, id] of [[a, "reader-a"], [b, "reader-b"], [c, "reader-c"]] as const) {
+        assert.equal(tryOpenStory(story, pair.priv, id).status, "opened");
+      }
+      assert.equal(tryOpenStory(story, stranger.priv, "stranger-x").status, "not-entitled");
+      assert.equal(tryOpenStory(story).status, "restricted");
+    }
+  });
+});
