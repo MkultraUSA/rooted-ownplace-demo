@@ -1,7 +1,7 @@
 // Shared timeline library: story package construction, index read/rebuild,
 // and syndication to every configured backend. Used by the CLI (`post.ts`)
 // and the web write API (`apps/ownplace-web/src/server.ts`) so both write
-// through the SAME lane. Slice-1 paid gating: optional single-reader sealed bodies via publishStory entitle opt; web API stays public-only.
+// through the SAME lane. Slice-2 paid gating: optional multi-reader sealed bodies via publishStory entitle/entitleReaders opts; web API stays public-only.
 
 import { randomBytes } from "node:crypto";
 import {
@@ -14,7 +14,7 @@ import {
   type Kinfolk,
   type Story,
 } from "@rooted/protocol";
-import { isSafeReaderId, isSealedBody, sealBody, tryOpenBody } from "@rooted/protocol";
+import { isSafeReaderId, isSealedBody, sealBodyForReaders, tryOpenBody } from "@rooted/protocol";
 import { LocalFolderStore, WebDavStore, type ObjectStore } from "@rooted/storage";
 import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -322,7 +322,7 @@ export interface EntitleReader {
   readerPublicKey: string;
 }
 
-export function buildPackage(input: { title: string; body: string; authorId: string; authorName: string; createdAt: string; storyId: string }, opts: { entitle?: EntitleReader } = {}) {
+export function buildPackage(input: { title: string; body: string; authorId: string; authorName: string; createdAt: string; storyId: string }, opts: { entitle?: EntitleReader; entitleReaders?: EntitleReader[] } = {}) {
   const identity = loadOrCreateIdentity(input.authorId);
   const kinfolk: Kinfolk = { id: input.authorId, displayName: input.authorName, publicKey: identity.publicKey };
   const story: Story = {
@@ -333,10 +333,13 @@ export function buildPackage(input: { title: string; body: string; authorId: str
     authorId: kinfolk.id,
     createdAt: input.createdAt,
   };
-  if (opts.entitle !== undefined) {
-    if (!isSafeReaderId(opts.entitle.readerId)) throw new Error("entitle reader id contains unsafe characters");
+  const readers: EntitleReader[] = [...(opts.entitleReaders ?? []), ...(opts.entitle ? [opts.entitle] : [])];
+  if (readers.length > 0) {
+    for (const r of readers) {
+      if (!isSafeReaderId(r.readerId)) throw new Error("entitle reader id contains unsafe characters");
+    }
     story.body = "";
-    story.restricted = sealBody(input.body, opts.entitle.readerPublicKey, opts.entitle.readerId);
+    story.restricted = sealBodyForReaders(input.body, readers);
   }
   const manifest = createManifest(input.storyId, [
     { path: "kinfolk.json", contentType: "application/json", value: kinfolk },
@@ -414,12 +417,12 @@ export function backendsFromEnv(repoRoot: string): BackendSet {
 export async function publishStory(
   validated: { title: string; body: string; authorId: string; authorName: string },
   backends: BackendSet,
-  opts: { createdAt?: string; storyId?: string; entitle?: EntitleReader } = {}
+  opts: { createdAt?: string; storyId?: string; entitle?: EntitleReader; entitleReaders?: EntitleReader[] } = {}
 ): Promise<PublishResult> {
   const now = opts.createdAt ?? new Date().toISOString();
   const storyId = opts.storyId ?? makeStoryId(now);
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(storyId)) throw new Error("unsafe story id");
-  const { files, story } = buildPackage({ ...validated, createdAt: now, storyId }, { entitle: opts.entitle });
+  const { files, story } = buildPackage({ ...validated, createdAt: now, storyId }, { entitle: opts.entitle, entitleReaders: opts.entitleReaders });
   const published: string[] = [];
   const skipped: string[] = [];
 

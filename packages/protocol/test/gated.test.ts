@@ -5,6 +5,7 @@ import {
   isSealedBody,
   loadOrCreateEncryptionIdentity,
   sealBody,
+  sealBodyForReaders,
   tryOpenBody,
   unsealBody,
 } from "../src/index.js";
@@ -27,7 +28,8 @@ test("sealed body round-trips for the entitled reader only", () => {
   const stranger = x25519Pair();
   const env = sealBody("paid story for bob", reader.pub, "reader-bob");
   assert.equal(env.algorithm, "aes-256-gcm");
-  assert.equal(env.wrapped.readerId, "reader-bob");
+  assert.equal(env.wrapped.length, 1);
+  assert.equal(env.wrapped[0].readerId, "reader-bob");
   assert.equal(unsealBody(env, reader.priv, "reader-bob"), "paid story for bob");
   assert.throws(() => unsealBody(env, stranger.priv, "stranger-x"), /not entitled/);
   assert.throws(() => unsealBody(env, reader.priv, "reader-eve"), /not entitled/);
@@ -46,8 +48,8 @@ test("tampered envelopes fail closed with a fixed message", () => {
   for (const tampered of [
     { ...env, ciphertext: mutateB64(env.ciphertext) },
     { ...env, bodyNonce: mutateB64(env.bodyNonce) },
-    { ...env, wrapped: { ...env.wrapped, wrappedKey: mutateB64(env.wrapped.wrappedKey) } },
-    { ...env, wrapped: { ...env.wrapped, keyNonce: mutateB64(env.wrapped.keyNonce) } },
+    { ...env, wrapped: [{ ...env.wrapped[0], wrappedKey: mutateB64(env.wrapped[0].wrappedKey) }] },
+    { ...env, wrapped: [{ ...env.wrapped[0], keyNonce: mutateB64(env.wrapped[0].keyNonce) }] },
   ]) {
     assert.throws(() => unsealBody(tampered, reader.priv, "reader-bob"), /not entitled/);
   }
@@ -61,6 +63,7 @@ test("malformed envelopes are malformed, not not-entitled", () => {
     { ...sealBody("x", reader.pub, "reader-bob"), algorithm: "rot13" },
     { ...sealBody("x", reader.pub, "reader-bob"), ciphertext: "!!!" },
     { ...sealBody("x", reader.pub, "reader-bob"), wrapped: undefined },
+    { ...sealBody("x", reader.pub, "reader-bob"), wrapped: [] },
   ]) {
     assert.throws(() => unsealBody(bad, reader.priv), /malformed/);
     assert.equal(tryOpenBody({ body: "", restricted: bad }, reader.priv).status, "unreadable");
@@ -75,7 +78,7 @@ test("seals are randomized and inputs are validated", () => {
   const a = sealBody("same words", reader.pub, "reader-bob");
   const b = sealBody("same words", reader.pub, "reader-bob");
   assert.notEqual(a.ciphertext, b.ciphertext);
-  assert.notEqual(a.wrapped.wrappedKey, b.wrapped.wrappedKey);
+  assert.notEqual(a.wrapped[0].wrappedKey, b.wrapped[0].wrappedKey);
   assert.equal(isSealedBody(a), true);
   assert.equal(isSealedBody({}), false);
   assert.throws(() => sealBody("x", reader.pub, "../evil"), /unsafe/);
@@ -83,6 +86,14 @@ test("seals are randomized and inputs are validated", () => {
   const ed = generateKeyPairSync("ed25519");
   const edPub = ed.publicKey.export({ type: "spki", format: "pem" }).toString();
   assert.throws(() => sealBody("x", edPub, "reader-bob"), /must be X25519/);
+  assert.throws(() => sealBodyForReaders("x", []), /at least one reader/);
+  assert.throws(
+    () => sealBodyForReaders("x", [
+      { readerId: "reader-bob", readerPublicKey: reader.pub },
+      { readerId: "reader-bob", readerPublicKey: reader.pub },
+    ]),
+    /duplicate/,
+  );
 });
 
 test("encryption identity persists beside the signing identity", async () => {
@@ -101,4 +112,62 @@ test("encryption identity persists beside the signing identity", async () => {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("three readers open the same seal; stranger blocked; zero-match is not-entitled", () => {
+  const a = x25519Pair();
+  const b = x25519Pair();
+  const c = x25519Pair();
+  const stranger = x25519Pair();
+  const env = sealBodyForReaders("paid post for three", [
+    { readerId: "reader-a", readerPublicKey: a.pub },
+    { readerId: "reader-b", readerPublicKey: b.pub },
+    { readerId: "reader-c", readerPublicKey: c.pub },
+  ]);
+  assert.equal(env.wrapped.length, 3);
+  // One ciphertext, one data key: ciphertext shared across entries.
+  assert.equal(new Set(env.wrapped.map((w) => w.wrappedKey)).size, 3);
+  assert.equal(unsealBody(env, a.priv, "reader-a"), "paid post for three");
+  assert.equal(unsealBody(env, b.priv, "reader-b"), "paid post for three");
+  assert.equal(unsealBody(env, c.priv, "reader-c"), "paid post for three");
+  // Without caller id, any local key that unwraps still opens.
+  assert.equal(unsealBody(env, b.priv), "paid post for three");
+  assert.throws(() => unsealBody(env, stranger.priv, "stranger-x"), /not entitled/);
+  assert.throws(() => unsealBody(env, stranger.priv), /not entitled/);
+  // Zero matching entries yields not-entitled, never a raw crypto error.
+  assert.deepEqual(tryOpenBody({ body: "", restricted: env }, stranger.priv, "stranger-x").status, "not-entitled");
+  assert.deepEqual(tryOpenBody({ body: "", restricted: env }, a.priv, "reader-nope").status, "not-entitled");
+});
+
+test("removal of one entry still opens for the others", () => {
+  const a = x25519Pair();
+  const b = x25519Pair();
+  const c = x25519Pair();
+  const env = sealBodyForReaders("shared secret", [
+    { readerId: "reader-a", readerPublicKey: a.pub },
+    { readerId: "reader-b", readerPublicKey: b.pub },
+    { readerId: "reader-c", readerPublicKey: c.pub },
+  ]);
+  const pruned = { ...env, wrapped: env.wrapped.filter((w) => w.readerId !== "reader-b") };
+  assert.equal(isSealedBody(pruned), true);
+  assert.equal(unsealBody(pruned, a.priv, "reader-a"), "shared secret");
+  assert.equal(unsealBody(pruned, c.priv, "reader-c"), "shared secret");
+  assert.throws(() => unsealBody(pruned, b.priv, "reader-b"), /not entitled/);
+});
+
+test("tampered second entry does not break the first", () => {
+  const a = x25519Pair();
+  const b = x25519Pair();
+  const env = sealBodyForReaders("shared secret", [
+    { readerId: "reader-a", readerPublicKey: a.pub },
+    { readerId: "reader-b", readerPublicKey: b.pub },
+  ]);
+  const tampered = {
+    ...env,
+    wrapped: [env.wrapped[0], { ...env.wrapped[1], wrappedKey: mutateB64(env.wrapped[1].wrappedKey) }],
+  };
+  assert.equal(isSealedBody(tampered), true);
+  assert.equal(unsealBody(tampered, a.priv, "reader-a"), "shared secret");
+  assert.throws(() => unsealBody(tampered, b.priv, "reader-b"), /not entitled/);
+  assert.deepEqual(tryOpenBody({ body: "", restricted: tampered }, a.priv, "reader-a").status, "opened");
 });
