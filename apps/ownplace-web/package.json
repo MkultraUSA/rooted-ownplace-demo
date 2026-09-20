@@ -1,1 +1,12 @@
-{ "name": "@rooted/ownplace-web", "version": "0.1.0", "private": true, "type": "module" }
+{
+  "name": "@rooted/ownplace-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "@rooted/timeline": "0.1.0"
+  }
+}

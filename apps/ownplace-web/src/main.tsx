@@ -5,6 +5,10 @@ import "./style.css";
 type TimelineEntry = { id: string; title: string; authorId: string; createdAt: string };
 type Timeline = { stories: TimelineEntry[] };
 type Story = { id: string; title: string; body: string; createdAt: string; authorId: string };
+type Contact = { id: string; displayName: string; addedAt: string };
+type ContactList = { contacts: Contact[] };
+
+const BACKENDS = ["nextcloud-sim", "google-drive-sim"];
 
 function isEntry(s: unknown): s is TimelineEntry {
   if (typeof s !== "object" || s === null) return false;
@@ -39,11 +43,11 @@ async function safeJson(res: Response): Promise<unknown | null> {
 async function loadTimeline(backend: string): Promise<TimelineEntry[]> {
   let res: Response;
   try {
-    res = await fetch(`/stores/${backend}/timeline.json`);
+    res = await fetch(`/api/timeline?backend=${encodeURIComponent(backend)}`);
   } catch {
     throw new Error("unreachable");
   }
-  if (res.status === 404) return []; // legacy seed: no timeline yet (caller tries flat fallback)
+  if (res.status === 404) return [];
   if (!res.ok) throw new Error(`backend error ${res.status}`);
   const parsed = await safeJson(res);
   if (!parsed || typeof parsed !== "object" || !Array.isArray((parsed as Timeline).stories)) {
@@ -55,7 +59,7 @@ async function loadTimeline(backend: string): Promise<TimelineEntry[]> {
 async function loadStory(backend: string, id: string): Promise<Story | null> {
   let res: Response;
   try {
-    res = await fetch(`/stores/${backend}/timeline/${encodeURIComponent(id)}/story.json`);
+    res = await fetch(`/api/story?backend=${encodeURIComponent(backend)}&id=${encodeURIComponent(id)}`);
   } catch {
     return null;
   }
@@ -65,58 +69,31 @@ async function loadStory(backend: string, id: string): Promise<Story | null> {
   return parsed as Story;
 }
 
-// Flat fallback for legacy seeds (publish writes only flat files, no timeline/).
-async function loadFlatStory(backend: string): Promise<Story | null> {
-  let res: Response;
-  try {
-    res = await fetch(`/stores/${backend}/story.json`);
-  } catch {
-    return null;
-  }
-  if (!res.ok) return null;
-  const parsed = await safeJson(res);
-  if (!parsed || typeof (parsed as Story).title !== "string") return null;
-  return parsed as Story;
-}
-
-function useBackend(backend: string) {
+function useBackend(backend: string, refresh: number) {
   const [state, setState] = useState<
     | { status: "loading" }
     | { status: "error"; message: string }
     | { status: "empty" }
-    | { status: "ready"; entries: TimelineEntry[]; stories: Record<string, Story>; legacy: boolean }
+    | { status: "ready"; entries: TimelineEntry[]; stories: Record<string, Story> }
   >({ status: "loading" });
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const list = await loadTimeline(backend);
-        if (list.length > 0) {
-          const pairs = await Promise.all(
-            list.map(async (e) => [e.id, await loadStory(backend, e.id)] as const)
-          );
-          if (!cancelled) {
-            setState({
-              status: "ready",
-              entries: list,
-              stories: Object.fromEntries(pairs.filter(([, s]) => s !== null) as [string, Story][]),
-              legacy: false,
-            });
-          }
+        if (list.length === 0) {
+          if (!cancelled) setState({ status: "empty" });
           return;
         }
-        const flat = await loadFlatStory(backend);
+        const pairs = await Promise.all(
+          list.map(async (e) => [e.id, await loadStory(backend, e.id)] as const)
+        );
         if (!cancelled) {
-          if (flat) {
-            setState({
-              status: "ready",
-              entries: [{ id: flat.id, title: flat.title, authorId: flat.authorId, createdAt: flat.createdAt }],
-              stories: { [flat.id]: flat },
-              legacy: true,
-            });
-          } else {
-            setState({ status: "empty" });
-          }
+          setState({
+            status: "ready",
+            entries: list,
+            stories: Object.fromEntries(pairs.filter(([, s]) => s !== null) as [string, Story][]),
+          });
         }
       } catch (e) {
         if (!cancelled) setState({ status: "error", message: (e as Error).message });
@@ -125,12 +102,133 @@ function useBackend(backend: string) {
     return () => {
       cancelled = true;
     };
-  }, [backend]);
+  }, [backend, refresh]);
   return state;
 }
 
-function BackendColumn({ backend }: { backend: string }) {
-  const state = useBackend(backend);
+function Composer({ onPosted }: { onPosted: () => void }) {
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [status, setStatus] = useState<string>("");
+  const [busy, setBusy] = useState(false);
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setStatus("");
+    try {
+      const res = await fetch("/api/post", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, body }),
+      });
+      const parsed = (await safeJson(res)) as { storyId?: string; error?: string } | null;
+      if (!res.ok) {
+        setStatus(`Post failed: ${parsed?.error ?? res.status}`);
+      } else {
+        setStatus(`Posted ${parsed?.storyId ?? ""} — syndicated to all backends.`);
+        setTitle("");
+        setBody("");
+        onPosted();
+      }
+    } catch (err) {
+      setStatus(`Post failed: ${(err as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section className="composer">
+      <h2>New post</h2>
+      <p className="lede">Posting goes to everyone syndicated with you.</p>
+      <form onSubmit={submit}>
+        <input
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Title (max 140)"
+          maxLength={140}
+          aria-label="Title"
+        />
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          placeholder="What is happening?"
+          maxLength={5000}
+          rows={4}
+          aria-label="Body"
+        />
+        <button type="submit" disabled={busy || !title.trim() || !body.trim()}>
+          {busy ? "Posting…" : "Post to timeline"}
+        </button>
+      </form>
+      {status && <p className="date">{status}</p>}
+    </section>
+  );
+}
+
+function Contacts() {
+  const [list, setList] = useState<Contact[]>([]);
+  const [id, setId] = useState("");
+  const [name, setName] = useState("");
+  const [status, setStatus] = useState("");
+  async function refresh() {
+    try {
+      const res = await fetch("/api/contacts");
+      const parsed = (await safeJson(res)) as ContactList | null;
+      setList(Array.isArray(parsed?.contacts) ? parsed.contacts : []);
+    } catch {
+      setList([]);
+    }
+  }
+  useEffect(() => {
+    refresh();
+  }, []);
+  async function add(e: React.FormEvent) {
+    e.preventDefault();
+    setStatus("");
+    const res = await fetch("/api/contacts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, displayName: name }),
+    });
+    const parsed = (await safeJson(res)) as { error?: string } | null;
+    if (!res.ok) {
+      setStatus(`Couldn't add: ${parsed?.error ?? res.status}`);
+    } else {
+      setId("");
+      setName("");
+      refresh();
+    }
+  }
+  async function remove(contactId: string) {
+    await fetch(`/api/contacts?id=${encodeURIComponent(contactId)}`, { method: "DELETE" });
+    refresh();
+  }
+  return (
+    <section className="composer">
+      <h2>Syndication contacts</h2>
+      <p className="lede">Kinfolk you follow. Posts reach everyone here.</p>
+      <ul>
+        {list.map((c) => (
+          <li key={c.id}>
+            {c.displayName} <code>{c.id}</code>{" "}
+            <button onClick={() => remove(c.id)}>Unfollow</button>
+          </li>
+        ))}
+        {list.length === 0 && <li>No contacts yet.</li>}
+      </ul>
+      <form onSubmit={add}>
+        <input value={id} onChange={(e) => setId(e.target.value)} placeholder="kinfolk id" aria-label="Contact id" />
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Display name" aria-label="Display name" />
+        <button type="submit" disabled={!id.trim() || !name.trim()}>Follow</button>
+      </form>
+      {status && <p className="date">{status}</p>}
+    </section>
+  );
+}
+
+function BackendColumn({ backend, refresh }: { backend: string; refresh: number }) {
+  const state = useBackend(backend, refresh);
   return (
     <article>
       <div className="card-head">
@@ -149,14 +247,11 @@ function BackendColumn({ backend }: { backend: string }) {
       )}
       {state.status === "empty" && (
         <p>
-          No stories yet — run <code>npm run post</code>.
+          No stories yet — post above or run <code>npm run post</code>.
         </p>
       )}
       {state.status === "ready" && (
         <>
-          {state.legacy && (
-            <p className="date">Legacy seed (flat copy — run npm run post for a timeline).</p>
-          )}
           {state.entries.map((e) => {
             const s = state.stories[e.id];
             return (
@@ -177,6 +272,7 @@ function BackendColumn({ backend }: { backend: string }) {
 }
 
 function App() {
+  const [refresh, setRefresh] = useState(0);
   return (
     <main>
       <header>
@@ -194,9 +290,12 @@ function App() {
           placeholders, not production security.
         </span>
       </section>
+      <Composer onPosted={() => setRefresh((n) => n + 1)} />
+      <Contacts />
       <div className="grid">
-        <BackendColumn backend="nextcloud-sim" />
-        <BackendColumn backend="google-drive-sim" />
+        {BACKENDS.map((b) => (
+          <BackendColumn key={b} backend={b} refresh={refresh} />
+        ))}
       </div>
     </main>
   );

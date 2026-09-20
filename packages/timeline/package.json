@@ -1,0 +1,7 @@
+{
+  "name": "@rooted/timeline",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@rooted/protocol": "0.1.0", "@rooted/storage": "0.1.0" }
+}
