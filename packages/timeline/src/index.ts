@@ -6,8 +6,10 @@
 import { randomBytes } from "node:crypto";
 import {
   createManifest,
+  hashObject,
   loadOrCreateIdentity,
   signManifest,
+  verifyManifestSignature,
   objectBytes,
   type Kinfolk,
   type Story,
@@ -26,12 +28,14 @@ export interface TimelineEntry {
   title: string;
   authorId: string;
   createdAt: string;
+  verified?: boolean;
 }
 export interface TimelineIndex {
   protocol: "rooted/v0.1";
   kind: "timeline";
   updatedAt: string;
   stories: TimelineEntry[];
+  skipped?: { id: string; reason: string }[];
 }
 
 export interface Contact {
@@ -101,51 +105,152 @@ export function sortTimeline(stories: TimelineEntry[]): void {
   stories.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
+export function isSafeHistoryId(id: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id);
+}
+
+const HISTORY_FILES = ["kinfolk.json", "story.json", "manifest.json", "signature.json"] as const;
+
+function collectHistoryProblems(parsed: Record<string, unknown>): string[] {
+  const problems: string[] = [];
+  const manifest = parsed["manifest.json"] as
+    | { objects?: unknown; signing?: unknown; packageId?: unknown }
+    | undefined;
+  const signature = parsed["signature.json"] as { signedManifestSha256?: unknown } | undefined;
+  if (manifest && Array.isArray(manifest.objects)) {
+    const names = (manifest.objects as { path?: unknown }[]).map((o) => o?.path);
+    for (const required of ["kinfolk.json", "story.json"]) {
+      if (names.filter((name) => name === required).length !== 1) {
+        problems.push(`manifest must list ${required} exactly once`);
+      }
+    }
+    for (const obj of manifest.objects as { path?: unknown; sha256?: unknown }[]) {
+      if (typeof obj?.path !== "string" || typeof obj?.sha256 !== "string") {
+        problems.push("manifest has malformed object entry");
+        continue;
+      }
+      const content = parsed[obj.path];
+      if (content === undefined) {
+        problems.push(`manifest lists ${obj.path} but it is missing`);
+        continue;
+      }
+      if (hashObject(content) !== obj.sha256) problems.push(`hash mismatch: ${obj.path}`);
+    }
+  } else if (parsed["manifest.json"] !== undefined) {
+    problems.push("manifest is malformed: objects is not an array");
+  }
+  if (manifest && signature) {
+    if (typeof signature.signedManifestSha256 !== "string") {
+      problems.push("signature is malformed: signedManifestSha256 is not a string");
+    } else if (signature.signedManifestSha256 !== hashObject(manifest)) {
+      problems.push("signature does not match manifest");
+    } else if ((manifest as { signing?: string }).signing !== "ed25519") {
+      // Legacy demo-placeholder envelopes are readable files, never trust.
+      problems.push("package is not Ed25519 signed");
+    } else if (!verifyManifestSignature(manifest, signature, parsed["kinfolk.json"])) {
+      problems.push("Ed25519 signature verification failed");
+    }
+  }
+  const kinfolk = parsed["kinfolk.json"] as { id?: unknown } | undefined;
+  const story = parsed["story.json"] as { authorId?: unknown } | undefined;
+  if (kinfolk && story && (typeof kinfolk.id !== "string" || story.authorId !== kinfolk.id)) {
+    problems.push("story author does not match Kinfolk identity");
+  }
+  if (!manifest || !signature || !kinfolk || !story) problems.push("incomplete package");
+  return problems;
+}
+
+export interface VerifiedHistoryPackage {
+  kinfolk: Kinfolk;
+  story: Story;
+  manifest: Record<string, unknown> & { packageId: string };
+  signature: Record<string, unknown>;
+}
+
+// Verify one historical story package before display. Rejects missing or
+// tampered signatures and legacy demo-placeholder downgrades.
+export async function fetchVerifiedHistoryPackage(store: ObjectStore, id: string): Promise<VerifiedHistoryPackage> {
+  if (!isSafeHistoryId(id)) throw new Error(`${id}: unsafe story id`);
+  const parsed: Record<string, unknown> = {};
+  const problems: string[] = [];
+  for (const f of HISTORY_FILES) {
+    let text: string;
+    try {
+      text = new TextDecoder().decode(await store.readObject(`timeline/${id}/${f}`));
+    } catch (e) {
+      problems.push(`missing unreadable file: ${f} (${(e as Error).message})`);
+      continue;
+    }
+    try {
+      parsed[f] = JSON.parse(text);
+    } catch {
+      problems.push(`invalid JSON: ${f}`);
+    }
+  }
+  problems.push(...collectHistoryProblems(parsed));
+  if (problems.length) throw new Error(`${id}: ${problems.join("; ")}`);
+  return {
+    kinfolk: parsed["kinfolk.json"] as Kinfolk,
+    story: parsed["story.json"] as Story,
+    manifest: parsed["manifest.json"] as VerifiedHistoryPackage["manifest"],
+    signature: parsed["signature.json"] as Record<string, unknown>,
+  };
+}
+
+export async function readVerifiedHistoryStory(store: ObjectStore, id: string): Promise<Story> {
+  return (await fetchVerifiedHistoryPackage(store, id)).story;
+}
+
 export async function rebuildIndex(store: ObjectStore, label: string): Promise<TimelineEntry[]> {
+  return (await readAuthenticatedTimeline(store, label, new Date().toISOString())).index.stories;
+}
+
+// Authenticated timeline read: timeline.json is an untrusted cache hint and
+// is never used for display. Entries derive solely from verified history
+// packages; tampered, unsigned, or legacy-placeholder entries are skipped.
+export async function readAuthenticatedTimeline(
+  store: ObjectStore, label: string, now: string
+): Promise<{ index: TimelineIndex; skipped: { id: string; reason: string }[] }> {
   const entries: TimelineEntry[] = [];
+  const skipped: { id: string; reason: string }[] = [];
   let paths: string[] = [];
   try {
     paths = await store.listObjects("timeline/");
   } catch {
-    return entries;
+    return { index: { protocol: "rooted/v0.1", kind: "timeline", updatedAt: now, stories: entries, skipped }, skipped };
   }
   const ids = [...new Set(
     paths.map((p) => p.split("/")[1]).filter((id) => typeof id === "string" && id.length > 0)
   )];
   for (const id of ids) {
     try {
-      const story = JSON.parse(
-        new TextDecoder().decode(await store.readObject(`timeline/${id}/story.json`))
-      ) as Partial<Story>;
+      const pkg = await fetchVerifiedHistoryPackage(store, id);
+      const story = pkg.story as Partial<Story>;
       if (typeof story?.id === "string" && typeof story?.title === "string" &&
-          typeof story?.authorId === "string" && typeof story?.createdAt === "string") {
-        entries.push({ id: story.id, title: story.title, authorId: story.authorId, createdAt: story.createdAt });
+          typeof story?.authorId === "string" && typeof story?.createdAt === "string" &&
+          !Number.isNaN(Date.parse(story.createdAt))) {
+        entries.push({ id: story.id, title: story.title, authorId: story.authorId, createdAt: story.createdAt, verified: true });
+      } else {
+        skipped.push({ id, reason: "verified package has malformed story fields" });
       }
-    } catch {
-      // unreadable history entry: skip, never fail the whole rebuild
+    } catch (e) {
+      // Unverified history entry: skip, never fail the whole read.
+      skipped.push({ id, reason: (e as Error).message });
     }
   }
-  if (entries.length > 0) console.log(`rebuilt ${label} index from ${entries.length} on-disk ${entries.length === 1 ? "story" : "stories"}`);
-  return entries;
+  sortTimeline(entries);
+  if (skipped.length > 0) {
+    console.log(`rebuilt ${label} index from ${entries.length} verified on-disk ${entries.length === 1 ? "story" : "stories"} (${skipped.length} unverified skipped)`);
+  } else if (entries.length > 0) {
+    console.log(`rebuilt ${label} index from ${entries.length} on-disk ${entries.length === 1 ? "story" : "stories"}`);
+  }
+  return { index: { protocol: "rooted/v0.1", kind: "timeline", updatedAt: now, stories: entries, skipped }, skipped };
 }
 
 export async function readIndex(store: ObjectStore, label: string, now: string): Promise<TimelineIndex> {
-  try {
-    const raw = new TextDecoder().decode(await store.readObject("timeline.json"));
-    const parsed = JSON.parse(raw) as Partial<TimelineIndex>;
-    if (parsed && Array.isArray(parsed.stories)) {
-      return {
-        protocol: "rooted/v0.1",
-        kind: "timeline",
-        updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : now,
-        stories: parsed.stories.filter(isEntry),
-      };
-    }
-  } catch {
-    // missing or unreadable index: fall through to rebuild
-  }
-  const rebuilt = await rebuildIndex(store, label);
-  return { protocol: "rooted/v0.1", kind: "timeline", updatedAt: now, stories: rebuilt };
+  // Authenticated: derive display metadata from verified history packages
+  // rather than trusting unsigned timeline.json values.
+  return (await readAuthenticatedTimeline(store, label, now)).index;
 }
 
 export function buildPackage(input: { title: string; body: string; authorId: string; authorName: string; createdAt: string; storyId: string }) {
@@ -187,7 +292,7 @@ async function publishToTimeline(
 ): Promise<void> {
   const index = await readIndex(store, label, now);
   if (!index.stories.some((s) => s.id === storyId)) {
-    index.stories.push({ id: storyId, title: story.title, authorId: story.authorId, createdAt: now });
+    index.stories.push({ id: storyId, title: story.title, authorId: story.authorId, createdAt: now, verified: true });
   }
   sortTimeline(index.stories);
   index.updatedAt = now;

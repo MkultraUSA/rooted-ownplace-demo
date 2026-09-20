@@ -8,8 +8,12 @@ import {
   addContact,
   backendsFromEnv,
   buildPackage,
+  fetchVerifiedHistoryPackage,
+  isSafeHistoryId,
   publishStory,
+  readAuthenticatedTimeline,
   readContacts,
+  readVerifiedHistoryStory,
   removeContact,
   validateContact,
   validateInput,
@@ -89,5 +93,108 @@ test("backendsFromEnv honors PUBLISH_ROOT and skips clouds by default", () => {
     assert.equal(b.drive, undefined);
   } finally {
     process.env = saved;
+  }
+});
+
+async function publishOne(tmp: string, title = "Real title") {
+  const idDir = await mkdtemp(join(tmpdir(), "ownplace-id-"));
+  const savedIdDir = process.env.OWNPLACE_IDENTITY_DIR;
+  process.env.OWNPLACE_IDENTITY_DIR = idDir;
+  try {
+    const validated = validateInput({ title, body: "body" });
+    const res = await publishStory(validated, { root: tmp }, {
+      createdAt: "2026-09-20T00:00:00.000Z",
+      storyId: `story-2026-09-20-${Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, "0")}`,
+    });
+    return res;
+  } finally {
+    if (savedIdDir === undefined) delete process.env.OWNPLACE_IDENTITY_DIR;
+    else process.env.OWNPLACE_IDENTITY_DIR = savedIdDir;
+    await rm(idDir, { recursive: true, force: true });
+  }
+}
+
+test("authenticated timeline ignores forged timeline.json values", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "rooted-auth-"));
+  try {
+    const res = await publishOne(tmp, "Real title");
+    const { writeFile, readFile } = await import("node:fs/promises");
+    // Forge the unsigned index: readers must not present it as authenticated.
+    await writeFile(
+      join(tmp, "nextcloud-sim", "timeline.json"),
+      JSON.stringify({ protocol: "rooted/v0.1", kind: "timeline", updatedAt: "2026-09-20T00:00:00.000Z", stories: [{ id: res.storyId, title: "FORGED", authorId: "attacker", createdAt: "2026-09-20T00:00:00.000Z" }] }) + "\n"
+    );
+    const store = new LocalFolderStore(join(tmp, "nextcloud-sim"));
+    const { index, skipped } = await readAuthenticatedTimeline(store, "nextcloud-sim", "2026-09-20T00:00:00.000Z");
+    assert.equal(index.stories.length, 1);
+    assert.equal(index.stories[0].title, "Real title");
+    assert.equal(index.stories[0].verified, true);
+    assert.deepEqual(skipped, []);
+    void readFile;
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("tampered history story is skipped, never displayed", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "rooted-auth-"));
+  try {
+    const res = await publishOne(tmp);
+    const { writeFile, readFile } = await import("node:fs/promises");
+    const victim = join(tmp, "nextcloud-sim", "timeline", res.storyId, "story.json");
+    const story = JSON.parse(await readFile(victim, "utf8"));
+    await writeFile(victim, JSON.stringify({ ...story, body: "tampered" }) + "\n");
+    const store = new LocalFolderStore(join(tmp, "nextcloud-sim"));
+    await assert.rejects(() => fetchVerifiedHistoryPackage(store, res.storyId), /hash mismatch: story\.json/);
+    const { index, skipped } = await readAuthenticatedTimeline(store, "nextcloud-sim", "2026-09-20T00:00:00.000Z");
+    assert.equal(index.stories.length, 0);
+    assert.equal(skipped.length, 1);
+    assert.match(skipped[0].reason, /hash mismatch/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("missing signature and legacy placeholder are unverified", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "rooted-auth-"));
+  try {
+    const res = await publishOne(tmp);
+    const { writeFile, readFile } = await import("node:fs/promises");
+    const { hashObject, createManifest, objectBytes } = await import("@rooted/protocol");
+    const store = new LocalFolderStore(join(tmp, "nextcloud-sim"));
+    // Missing signature file.
+    await rm(join(tmp, "nextcloud-sim", "timeline", res.storyId, "signature.json"), { force: true });
+    await assert.rejects(() => fetchVerifiedHistoryPackage(store, res.storyId), /missing unreadable file: signature\.json/);
+    let report = await readAuthenticatedTimeline(store, "nextcloud-sim", "2026-09-20T00:00:00.000Z");
+    assert.equal(report.index.stories.length, 0);
+    // Legacy placeholder downgrade is not silently accepted.
+    const kinfolk = JSON.parse(await readFile(join(tmp, "nextcloud-sim", "timeline", res.storyId, "kinfolk.json"), "utf8"));
+    const story = JSON.parse(await readFile(join(tmp, "nextcloud-sim", "timeline", res.storyId, "story.json"), "utf8"));
+    const legacy = createManifest(res.storyId, [
+      { path: "kinfolk.json", contentType: "application/json", value: kinfolk },
+      { path: "story.json", contentType: "application/json", value: story },
+    ]);
+    await writeFile(join(tmp, "nextcloud-sim", "timeline", res.storyId, "manifest.json"), objectBytes(legacy));
+    await writeFile(join(tmp, "nextcloud-sim", "timeline", res.storyId, "signature.json"), objectBytes({ algorithm: "demo-placeholder", signedManifestSha256: hashObject(legacy), note: "legacy" }));
+    await assert.rejects(() => fetchVerifiedHistoryPackage(store, res.storyId), /not Ed25519 signed/);
+    report = await readAuthenticatedTimeline(store, "nextcloud-sim", "2026-09-20T00:00:00.000Z");
+    assert.equal(report.index.stories.length, 0);
+    assert.match(report.skipped[0].reason, /not Ed25519 signed/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("history ids are path-safe and verified story read works", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "rooted-auth-"));
+  try {
+    const res = await publishOne(tmp, "Safe");
+    const store = new LocalFolderStore(join(tmp, "nextcloud-sim"));
+    assert.equal(isSafeHistoryId(res.storyId), true);
+    assert.equal(isSafeHistoryId("../evil"), false);
+    assert.equal((await readVerifiedHistoryStory(store, res.storyId)).title, "Safe");
+    await assert.rejects(() => readVerifiedHistoryStory(store, "../evil"), /unsafe/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
   }
 });

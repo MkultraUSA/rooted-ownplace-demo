@@ -2,7 +2,7 @@ import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
 
-type TimelineEntry = { id: string; title: string; authorId: string; createdAt: string };
+type TimelineEntry = { id: string; title: string; authorId: string; createdAt: string; verified?: boolean };
 type Timeline = { stories: TimelineEntry[] };
 type Story = { id: string; title: string; body: string; createdAt: string; authorId: string };
 type Contact = { id: string; displayName: string; addedAt: string };
@@ -41,6 +41,9 @@ async function safeJson(res: Response): Promise<unknown | null> {
 }
 
 async function loadTimeline(backend: string): Promise<TimelineEntry[]> {
+  // Server authenticates: entries derive from Ed25519-verified history
+  // packages only. Unsigned or tampered entries are excluded server-side
+  // and never rendered here.
   let res: Response;
   try {
     res = await fetch(`/api/timeline?backend=${encodeURIComponent(backend)}`);
@@ -263,9 +266,9 @@ function BackendColumn({ backend, refresh }: { backend: string; refresh: number 
             const s = state.stories[e.id];
             return (
               <div key={e.id} className="story">
-                <p className="date">{formatDate(e.createdAt)}</p>
+                <p className="date">{formatDate(e.createdAt)} · verified signature</p>
                 <h3>{e.title}</h3>
-                {s ? <p>{s.body}</p> : <p>Story file missing for this entry.</p>}
+                {s ? <p>{s.body}</p> : <p>Story unavailable or failed verification for this entry.</p>}
                 <footer>
                   <code>{e.id}</code>
                 </footer>
@@ -365,8 +368,9 @@ function App() {
       <section className="boundary">
         <strong>Demo boundary</strong>
         <span>
-          SHA-256 content hashes are real. Signing and encryption are
-          placeholders, not production security.
+          Timelines show only Ed25519-verified history packages — content hashes
+          and signatures are checked before display. Unverified entries are
+          hidden, never shown. Content is not encrypted.
         </span>
       </section>
       {authed === null && <p>Checking login…</p>}
