@@ -15,6 +15,8 @@ npm test
 
 Open the URL printed by Vite (normally `http://localhost:5173`). The publish command writes `demo/stores/nextcloud-sim` and `demo/stores/google-drive-sim` identically.
 
+Write API auth: set `OWNPLACE_WRITE_TOKEN`; on HTTPS deploys also set `COOKIE_SECURE=1` so session cookies require TLS.
+
 Signing and encryption are deliberately not faked: the demo uses real deterministic SHA-256 content hashes, plus metadata that clearly marks signing/encryption as a future boundary.
 
 ## Layout

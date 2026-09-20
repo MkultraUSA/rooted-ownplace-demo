@@ -291,11 +291,17 @@ function useSession() {
   }, []);
   async function login(token: string): Promise<void> {
     setLoginError("");
-    const res = await fetch("/api/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token }),
-    });
+    let res: Response;
+    try {
+      res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+    } catch {
+      setLoginError("Could not reach the server \u2014 check your connection and try again.");
+      return;
+    }
     if (!res.ok) {
       setLoginError("Wrong passphrase — try again.");
       return;

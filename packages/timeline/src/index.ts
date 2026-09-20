@@ -73,6 +73,8 @@ export function validateInput(input: StoryInput): { title: string; body: string;
   const cleanBody = body.trim();
   if (cleanTitle.length > TITLE_MAX) throw new Error(`title too long: max ${TITLE_MAX} characters`);
   if (cleanBody.length > BODY_MAX) throw new Error(`body too long: max ${BODY_MAX} characters`);
+  if (input.authorId !== undefined && typeof input.authorId !== "string") throw new Error("author-id must be a string");
+  if (input.authorName !== undefined && typeof input.authorName !== "string") throw new Error("author-name must be a string");
   const rawAuthorId = typeof input.authorId === "string" ? input.authorId : "kinfolk-alex";
   const rawAuthorName = typeof input.authorName === "string" ? input.authorName : "Alex Rowan";
   const authorId = rawAuthorId.trim();
