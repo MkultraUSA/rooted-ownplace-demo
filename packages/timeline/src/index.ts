@@ -495,6 +495,13 @@ async function publishToTimeline(
   for (const [name, bytes] of Object.entries(files)) {
     await store.writeObject(name, bytes);
   }
+  // M4 flat-copy lifecycle: public packages carry no sidecar, so a later
+  // PUBLIC post must clear any stale flat entitlements.json left by an
+  // earlier gated post. History (timeline/<id>/) is untouched; verification
+  // only reads history. Same op on every backend (sims stay identical).
+  if (!(ENTITLEMENTS_FILE in files)) {
+    await store.deleteObject(ENTITLEMENTS_FILE);
+  }
   await store.writeObject("timeline.json", indexBytes);
   console.log(`posted ${storyId} to ${label} (timeline + latest)`);
 }

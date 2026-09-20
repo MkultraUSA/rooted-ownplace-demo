@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, writeFile, access } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile, access } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 
 export interface ObjectStore {
@@ -6,6 +6,7 @@ export interface ObjectStore {
   readObject(path: string): Promise<Uint8Array>;
   writeObject(path: string, bytes: Uint8Array): Promise<void>;
   exists(path: string): Promise<boolean>;
+  deleteObject(path: string): Promise<void>;
 }
 
 export class LocalFolderStore implements ObjectStore {
@@ -40,6 +41,11 @@ export class LocalFolderStore implements ObjectStore {
     let target: string;
     try { target = this.resolve(path); } catch { return false; }
     return access(target).then(() => true, () => false);
+  }
+  async deleteObject(path: string): Promise<void> {
+    // Delete-if-exists: missing file is not an error (clears stale flat
+    // copies); unsafe paths still throw fail-closed via resolve().
+    await rm(this.resolve(path), { force: true });
   }
 }
 
@@ -121,6 +127,14 @@ export class WebDavStore implements ObjectStore {
     return res.ok;
   }
 
+  async deleteObject(path: string): Promise<void> {
+    // Delete-if-exists for stale flat copies: 404 is not an error.
+    checkPath(path);
+    const res = await fetch(this.url(path), { method: "DELETE", headers: { Authorization: this.auth } });
+    if (res.status === 404) return;
+    if (!res.ok && res.status !== 204) throw new Error(`WebDAV DELETE ${path} failed: ${res.status}`);
+  }
+
   async listObjects(prefix = ""): Promise<string[]> {
     if (prefix) checkPath(prefix.replace(/\/$/, ""));
     const target = prefix ? this.url(prefix.replace(/\/$/, "") + "/") : this.baseUrl + "/";
@@ -162,4 +176,5 @@ export class GoogleDriveStore implements ObjectStore {
   readObject(): Promise<Uint8Array> { return this.unavailable(); }
   writeObject(): Promise<void> { return this.unavailable(); }
   exists(): Promise<boolean> { return this.unavailable(); }
+  deleteObject(): Promise<void> { return this.unavailable(); }
 }
