@@ -362,3 +362,133 @@ test("slice-3: public posts emit no entitlements file and still verify", async (
     assert.equal(verified.story.body, "everyone reads");
   });
 });
+
+test("m4: build rejects duplicate reader ids across legacy+batch", async () => {
+  await withIdDir(async () => {
+    const a = x25519Pair();
+    const b = x25519Pair();
+    // Legacy `entitle` + batch `entitleReaders` with the same readerId.
+    assert.throws(
+      () =>
+        buildPackage(
+          {
+            title: "Paid post", body: "paywalled words", authorId: "kinfolk-alex",
+            authorName: "Alex", createdAt: "2026-09-20T00:00:00.000Z", storyId: "story-m4-dupe-1",
+          },
+          {
+            entitle: { readerId: "reader-a", readerPublicKey: a.pub },
+            entitleReaders: [{ readerId: "reader-a", readerPublicKey: b.pub }],
+          },
+        ),
+      /duplicate reader id/,
+    );
+    // Duplicates inside the batch alone also throw (fail fast, never build).
+    assert.throws(
+      () =>
+        buildPackage(
+          {
+            title: "Paid post", body: "paywalled words", authorId: "kinfolk-alex",
+            authorName: "Alex", createdAt: "2026-09-20T00:00:00.000Z", storyId: "story-m4-dupe-2",
+          },
+          {
+            entitleReaders: [
+              { readerId: "reader-a", readerPublicKey: a.pub },
+              { readerId: "reader-a", readerPublicKey: b.pub },
+            ],
+          },
+        ),
+      /duplicate reader id/,
+    );
+  });
+});
+
+test("m4: three-reader happy path entitlements match wrapped order and verify", async () => {
+  await withIdDir(async (dir) => {
+    const a = x25519Pair();
+    const b = x25519Pair();
+    const c = x25519Pair();
+    const pkg = buildPackage(
+      {
+        title: "Paid post", body: "paywalled words", authorId: "kinfolk-alex",
+        authorName: "Alex", createdAt: "2026-09-20T00:00:00.000Z", storyId: "story-m4-happy",
+      },
+      {
+        entitleReaders: [
+          { readerId: "reader-a", readerPublicKey: a.pub },
+          { readerId: "reader-b", readerPublicKey: b.pub },
+          { readerId: "reader-c", readerPublicKey: c.pub },
+        ],
+      },
+    );
+    const wrappedIds = (pkg.story.restricted as { wrapped: { readerId: string }[] }).wrapped.map((w) => w.readerId);
+    const entitledIds = (pkg.entitlements?.entitled ?? []).map((e) => e.readerId);
+    assert.deepStrictEqual(entitledIds, wrappedIds);
+    assert.deepStrictEqual(entitledIds, ["reader-a", "reader-b", "reader-c"]);
+    const root = join(dir, "stores");
+    const store = new LocalFolderStore(join(root, "nextcloud-sim"));
+    for (const [name, bytes] of Object.entries(pkg.files)) {
+      await store.writeObject(`timeline/story-m4-happy/${name}`, bytes);
+    }
+    const verified = await fetchVerifiedHistoryPackage(store, "story-m4-happy");
+    assert.deepStrictEqual((verified.entitlements?.entitled ?? []).map((e) => e.readerId), ["reader-a", "reader-b", "reader-c"]);
+    assert.equal(tryOpenStory(verified.story, a.priv, "reader-a").status, "opened");
+  });
+});
+
+test("m4: verify rejects sidecar-id swap and wrapped-entry removal as collected problems", async () => {
+  await withIdDir(async (dir) => {
+    const a = x25519Pair();
+    const b = x25519Pair();
+    const author = ed25519Pair();
+    const root = join(dir, "stores");
+    const { sealBodyForReaders } = await import("@rooted/protocol");
+    function signedPkg(id: string, story: unknown, entitlements: unknown) {
+      const kinfolk = { id: "kinfolk-x", displayName: "X", publicKey: author.pub };
+      const manifest = createManifest(
+        id,
+        [
+          { path: "kinfolk.json", contentType: "application/json", value: kinfolk },
+          { path: "story.json", contentType: "application/json", value: story },
+          { path: "entitlements.json", contentType: "application/json", value: entitlements },
+        ],
+        "ed25519",
+      );
+      const signature = signManifest(manifest, author.priv);
+      return {
+        "kinfolk.json": kinfolk, "story.json": story, "entitlements.json": entitlements,
+        "manifest.json": manifest, "signature.json": signature,
+      } as Record<string, unknown>;
+    }
+    async function writePkg(id: string, files: Record<string, unknown>): Promise<void> {
+      const store = new LocalFolderStore(join(root, "nextcloud-sim"));
+      for (const [name, value] of Object.entries(files)) {
+        await store.writeObject(`timeline/${id}/${name}`, objectBytes(value));
+      }
+    }
+    const baseStory = (id: string, readers: { readerId: string; readerPublicKey: string }[]) => ({
+      id, title: "t", body: "", media: [],
+      authorId: "kinfolk-x", createdAt: "2026-09-20T00:00:00.000Z",
+      restricted: sealBodyForReaders("secret", readers),
+    });
+    // Sidecar-id swap: envelope covers [a,b] but sidecar claims [a,evil].
+    // Correctly signed (hashes match) so only the M4 cross-check can catch it.
+    const swapId = "story-m4-swap";
+    await writePkg(swapId, signedPkg(swapId,
+      baseStory(swapId, [
+        { readerId: "reader-a", readerPublicKey: a.pub },
+        { readerId: "reader-b", readerPublicKey: b.pub },
+      ]),
+      { storyId: swapId, entitled: [{ readerId: "reader-a" }, { readerId: "reader-evil" }] }));
+    // Wrapped-entry removal: sidecar claims [a,b] but envelope only wraps [a].
+    const cutId = "story-m4-cut";
+    await writePkg(cutId, signedPkg(cutId,
+      baseStory(cutId, [{ readerId: "reader-a", readerPublicKey: a.pub }]),
+      { storyId: cutId, entitled: [{ readerId: "reader-a" }, { readerId: "reader-b" }] }));
+    const store = new LocalFolderStore(join(root, "nextcloud-sim"));
+    await assert.rejects(fetchVerifiedHistoryPackage(store, swapId), /story-m4-swap: .*entitlements\/wrapped mismatch/);
+    await assert.rejects(fetchVerifiedHistoryPackage(store, cutId), /story-m4-cut: .*entitlements\/wrapped mismatch/);
+    // Public skip reason stays a stable token (never raw internals).
+    const { toPublicSkipReason } = await import("../src/index.js");
+    assert.equal(toPublicSkipReason(`${swapId}: entitlements/wrapped mismatch`), "invalid entitlements");
+  });
+});
