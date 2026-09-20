@@ -25,7 +25,7 @@ Reads stay public; writes still require the operator token/session.
 Behind TLS the session cookie is marked Secure automatically
 (or force with `COOKIE_SECURE=1`).
 
-Signing and encryption are deliberately not faked: the demo uses real deterministic SHA-256 content hashes, plus metadata that clearly marks signing/encryption as a future boundary.
+New packages use persistent Ed25519 Kinfolk identities. The publisher stores private keys in `~/.local/share/ownplace/identities/` (override with `OWNPLACE_IDENTITY_DIR`); back them up securely. `kinfolk.json` publishes the public key, and the headless Kinfolk client verifies the latest package manifest signature and content hashes. Historical timeline reads in the web app are not yet authenticated. A newly fetched public key is self-asserted: pin or verify it out of band before trusting an identity across time. Legacy demo-placeholder packages remain accessible as files, but the verifying client rejects them; republish to obtain a signed package. Content is not encrypted.
 
 ## Layout
 
