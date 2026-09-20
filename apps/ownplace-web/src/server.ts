@@ -14,6 +14,7 @@
 // POST/DELETE only; reads stay public. When the env var is unset, writes
 // are allowed locally with a console warning (dev convenience, not a claim).
 
+import { randomBytes } from "node:crypto";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -86,9 +87,8 @@ const sessions = new Map<string, number>();
 const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
 
 function newSession(): string {
-  const bytes = new Uint8Array(32);
-  for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
-  const token = Buffer.from(bytes).toString("hex");
+  // CSPRNG session IDs: Math.random is predictable and must never mint secrets.
+  const token = randomBytes(32).toString("hex");
   sessions.set(token, Date.now());
   return token;
 }
