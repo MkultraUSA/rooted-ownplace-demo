@@ -1,34 +1,43 @@
 # Agent0 Status: Rooted / OwnPlace demo
 
-Date: 2026-09-19 (updated post PR #5). Host: srv1611290, workspace /root/.hermes/workspace/rooted-ownplace-demo. Repo: MkultraUSA/rooted-ownplace-demo (public).
+Date: 2026-09-20 (post PR #32). Host: srv1611290, workspace /root/.hermes/workspace/rooted-ownplace-demo. Repo: MkultraUSA/rooted-ownplace-demo (public).
 
-## What works now
+## What changed (post-PR5 → post-#32)
 
-- TypeScript monorepo: protocol (canonical JSON, SHA-256, demo-placeholder signing), storage (LocalFolderStore + real WebDavStore + Drive scaffold), creator-bot, client-sims, OwnPlace web (React+Vite).
-- `npm run publish`: sims always; kevcloud WebDAV when KEVCLOUD_* set; Drive via rclone when GOOGLE_DRIVE_SYNC=1. Skips reported, never faked.
-- `npm run parity`: 4-way fingerprint match across nextcloud-sim, google-drive-sim, kevcloud, google-drive. Proven live: identical fingerprint on all 4.
-- `npm run verify`: sim-only cross-check. `npm test`: 13 pass + 1 skip (opt-in live kevcloud test). `tsc --noEmit` clean. `npm run build` clean.
-- ownplace-web.service (systemd): serves dist on 127.0.0.1:8091, enabled, Restart=always.
-- Live backends: kevcloud `Rooted-OwnPlace-Demo/` (Nextcloud 33.0.9, WebDAV 207/201), Drive `Rooted OwnPlace Demo` (rclone rooted_drive:, scope drive.file).
+- Web: composer + contacts + shared timeline lib (#13), session login gate for composer (#14), mobile single-column UI (#15), auth hardening follow-ups (#21, closes #18), public URL + `GET /api/health` (#22, closes #19). Web live via systemd on 127.0.0.1:8091, exposed via Tailscale serve / nginx proxy.
+- Identity + trust: persistent Ed25519 Kinfolk keypairs, signed manifests, verifying client + parity path (#23, closes #20). Legacy placeholder packages rejected by verifiers.
+- Timeline auth: historical reads verify manifest/signature/content hashes per package; display derives from verified history only (#26, closes #24; #25 closed superseded).
+- Paid gating: slice 1 seals story bodies for one entitled reader (AES-256-GCM data key wrapped via X25519, envelope in story.json; #30, closes #29); slice 2 seals once for N readers via per-reader wrapped keys (#32, closes #31). Titles stay public; parity unaffected (same bytes to all backends).
+- Docs: REVIEW-LOG ledger (#12), paid-gating design note (#16, re #9), agentic scrum lane synthesis (#17).
 
-## Review lane (proven over PRs #1-5)
+## How to run
 
-- Radics pushes `radics/*` branches (code only — never `.github/workflows/`, house rule; Radics token lacks `workflow` scope, MkultraUSA owns CI config).
-- Independent blind review per PR (REQUEST-CHANGES twice, all findings fixed, re-review APPROVED).
-- Ruleset `review-lane-main`: PR + 1 approving review + green `demo` check + no force-push/deletion on main.
-- CI (`.github/workflows/ci.yml`): npm ci, tsc, test, publish, verify, diff -r, build on Node 20.
-- Telegram (@nukOmarchybot) pings MkultraUSA (id 5167192433) on PR-ready/merge-verified.
+```sh
+npm install
+npm run publish          # sims always; kevcloud/Drive opt-in
+npm run post -- --title T --body B
+npm run parity            # sim backends match
+npm run verify
+npm test
+npx tsc --noEmit
+npm run build
+```
 
-## Credentials
+Web: systemd serves dist on 127.0.0.1:8091. Writes require operator token (`OWNPLACE_WRITE_TOKEN`, session cookie; `COOKIE_SECURE=1` on HTTPS). Identities live in the operator data dir (override with `OWNPLACE_IDENTITY_DIR`) — back up private keys.
 
-None in repo. Drive token: /root/.config/rclone/rclone.conf (600, VPS only). kevcloud app password: local Agent0 rclone.conf only, passed via SSH env for one-shot publishes. Telegram token: chat + Hostinger env only.
+## What passed (at #32)
 
-## Naming
+- `npx tsc --noEmit` exit 0. `npm test`: 46 pass, 1 skip (opt-in live WebDAV). `npm run parity`: OK (nextcloud-sim, google-drive-sim). `npm run build` exit 0. Fresh-clone proofs green at slice-1/2 and history-auth.
+- Review lane: PRs #1–32, `review-findings-N` labels, 65 findings across 15 labelled PRs (plus 6 unlabelled, see REVIEW-LOG), ruleset `review-lane-main` (PR + 1 approval + green `demo` check).
 
-Rooted (project), OwnPlace (app), Kinfolk (users), Super Secret Social Network (prior concept). No "Soical" typo.
+## Deferred (explicit non-goals)
+
+- Payment/entitlement oracle, entitlements file (slice 3), per-audience parity, CLI multi-reader flags. No per-post targeting on `post`/API yet. Drive adapter still via rclone; no key server.
 
 ## Next
 
-- WebDAV hardening follow-ups (prefix-slice, decode-once, probe cleanup).
-- Public URL for OwnPlace web (nginx location or Tailscale serve).
-- Real remote-merge from Telegram (currently verify-only).
+- Paid gating slice 3 (entitlements file + oracle hook).
+- This docs catch-up (#27): REVIEW-LOG through #32, STATUS current.
+- Keep lane: `radics/*` code-only (never `.github/workflows/`), blind review per PR, never commit `demo/stores/*/` or operator secrets.
+
+No credentials in repo; operator secrets stay in VPS env only.
