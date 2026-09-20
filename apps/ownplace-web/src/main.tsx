@@ -278,8 +278,74 @@ function BackendColumn({ backend, refresh }: { backend: string; refresh: number 
   );
 }
 
+function useSession() {
+  const [authed, setAuthed] = useState<boolean | null>(null);
+  const [loginError, setLoginError] = useState("");
+  useEffect(() => {
+    fetch("/api/session")
+      .then(async (res) => {
+        const parsed = (await safeJson(res)) as { authenticated?: boolean } | null;
+        setAuthed(parsed?.authenticated === true);
+      })
+      .catch(() => setAuthed(false));
+  }, []);
+  async function login(token: string): Promise<void> {
+    setLoginError("");
+    const res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    if (!res.ok) {
+      setLoginError("Wrong passphrase — try again.");
+      return;
+    }
+    setAuthed(true);
+  }
+  async function logout(): Promise<void> {
+    await fetch("/api/logout", { method: "POST" });
+    setAuthed(false);
+  }
+  return { authed, loginError, login, logout };
+}
+
+function LoginForm({ onLogin, error }: { onLogin: (token: string) => void; error: string }) {
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (busy || !token) return;
+    setBusy(true);
+    try {
+      await onLogin(token);
+    } finally {
+      setBusy(false);
+      setToken("");
+    }
+  }
+  return (
+    <section className="composer">
+      <h2>Operator login</h2>
+      <p className="lede">Posting is limited to the timeline owner. Enter the operator passphrase.</p>
+      <form onSubmit={submit}>
+        <input
+          type="password"
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+          placeholder="Operator passphrase"
+          aria-label="Operator passphrase"
+          autoComplete="current-password"
+        />
+        <button type="submit" disabled={busy || !token}>Log in</button>
+      </form>
+      {error && <p className="date">{error}</p>}
+    </section>
+  );
+}
+
 function App() {
   const [refresh, setRefresh] = useState(0);
+  const { authed, loginError, login, logout } = useSession();
   return (
     <main>
       <header>
@@ -297,8 +363,17 @@ function App() {
           placeholders, not production security.
         </span>
       </section>
-      <Composer onPosted={() => setRefresh((n) => n + 1)} />
-      <Contacts />
+      {authed === null && <p>Checking login…</p>}
+      {authed === false && <LoginForm onLogin={login} error={loginError} />}
+      {authed === true && (
+        <>
+          <p>
+            <button onClick={() => logout()}>Log out</button>
+          </p>
+          <Composer onPosted={() => setRefresh((n) => n + 1)} />
+          <Contacts />
+        </>
+      )}
       <div className="grid">
         {BACKENDS.map((b) => (
           <BackendColumn key={b} backend={b} refresh={refresh} />
