@@ -27,8 +27,12 @@ PRs also carry `review-findings-N` labels (filterable, countable).
 | #26 | Authenticate historical timeline reads | 2 | COMMENTED → APPROVED (MkultraUSA) | `374a380` | #24 |
 | #30 | Paid gating slice 1: single-reader sealed story bodies | 6 | APPROVED (Radics) | — | #29 |
 | #32 | Paid gating slice 2: multi-reader wrapped keys | 2 | APPROVED (Radics) | — | #31 |
+| #33 | Docs catch-up: REVIEW-LOG through #32, AGENT0_STATUS current | 0 | APPROVED (Radics, docs-only) | — | #27 |
+| #35 | Paid gating slice 3: signed entitlements sidecar + CLI multi-reader | 1 | APPROVED (Radics) | — | #34 |
+| #38 | M4: entitled-vs-wrapped cross-check | 2 | APPROVED (Radics) | — | #36 |
+| #39 | M4: stale flat-copy entitlements lifecycle | 2 | APPROVED (Radics) | — | #37 |
 
-Totals: **65 findings caught across 15 PRs with `review-findings-N` labels (13 merged + #2 closed-superseded + #25 closed-superseded), plus 6 unlabelled PRs (#12–17, unknown counts — see rows)**, all addressed or queued.
+Totals: **70 findings caught across 19 PRs with `review-findings-N` labels (17 merged + #2 closed-superseded + #25 closed-superseded), plus 6 unlabelled PRs (#12–17, unknown counts — see rows)**, all addressed or queued.
 Themes: import side effects, path traversal, raw throws vs collected
 problems, weak cross-backend checks, destructive tests, crash ordering,
 missing error states, unvalidated input; plus session/auth hardening,
