@@ -17,6 +17,14 @@ Open the URL printed by Vite (normally `http://localhost:5173`). The publish com
 
 Write API auth: set `OWNPLACE_WRITE_TOKEN`; on HTTPS deploys also set `COOKIE_SECURE=1` so session cookies require TLS.
 
+Public URL (operator): the server binds `127.0.0.1:8091`. Expose it via
+Tailscale serve (`tailscale serve --bg --https=<port> http://127.0.0.1:8091`)
+or an nginx `location /ownplace/` proxy with `proxy_set_header X-Forwarded-Proto $scheme`.
+Reads stay public; writes still require the operator token/session.
+`GET /api/health` returns `{ok:true}` for uptime checks.
+Behind TLS the session cookie is marked Secure automatically
+(or force with `COOKIE_SECURE=1`).
+
 Signing and encryption are deliberately not faked: the demo uses real deterministic SHA-256 content hashes, plus metadata that clearly marks signing/encryption as a future boundary.
 
 ## Layout
