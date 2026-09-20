@@ -107,3 +107,147 @@ test("post rebuilds corrupt timeline index from on-disk history", async () => {
     await rm(tmp, { recursive: true, force: true });
   }
 });
+
+test("post --entitle-readers seals for N readers, byte-identical sims", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "rooted-post-"));
+  const { generateKeyPairSync } = await import("node:crypto");
+  const { writeFile } = await import("node:fs/promises");
+  const { tryOpenBody } = await import("@rooted/protocol");
+  const idsDir = await mkdtemp(join(tmpdir(), "rooted-post-ids-"));
+  function x25519Pair() {
+    const pair = generateKeyPairSync("x25519");
+    return {
+      priv: pair.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      pub: pair.publicKey.export({ type: "spki", format: "pem" }).toString(),
+    };
+  }
+  try {
+    const a = x25519Pair();
+    const b = x25519Pair();
+    const c = x25519Pair();
+    await writeFile(join(tmp, "reader-a.pub"), a.pub);
+    await writeFile(join(tmp, "reader-b.pub"), b.pub);
+    // Mix both supported shapes: pubkeyFile paths and one inline publicKey.
+    const batchFile = join(tmp, "readers.json");
+    await writeFile(batchFile, JSON.stringify([
+      { readerId: "reader-a", pubkeyFile: join(tmp, "reader-a.pub") },
+      { readerId: "reader-b", pubkeyFile: join(tmp, "reader-b.pub") },
+      { readerId: "reader-c", publicKey: c.pub },
+    ]));
+    const savedIds = process.env.OWNPLACE_IDENTITY_DIR;
+    process.env.OWNPLACE_IDENTITY_DIR = idsDir;
+    let stdout: string;
+    try {
+      ({ stdout } = await runPost(tmp,
+        ["--title", "Paid post", "--body", "paywalled words", "--entitle-readers", batchFile]));
+    } finally {
+      if (savedIds === undefined) delete process.env.OWNPLACE_IDENTITY_DIR;
+      else process.env.OWNPLACE_IDENTITY_DIR = savedIds;
+    }
+    const id = (stdout.match(/story=\S+/) ?? [""])[0].replace("story=", "").trim();
+    assert.ok(id.startsWith("story-"), `expected story id in output, got: ${stdout.slice(-200)}`);
+    const packageFiles = ["kinfolk.json", "story.json", "manifest.json", "signature.json", "entitlements.json"];
+    for (const backend of ["nextcloud-sim", "google-drive-sim"]) {
+      for (const f of packageFiles) {
+        const mine = await readFile(join(tmp, "nextcloud-sim", "timeline", id, f));
+        const theirs = await readFile(join(tmp, backend, "timeline", id, f));
+        assert.deepStrictEqual(mine, theirs, `${backend}/${f} differs`);
+      }
+      // Flat latest copy matches timeline copy (sidecar included).
+      for (const f of ["story.json", "manifest.json", "entitlements.json"]) {
+        const flat = await readFile(join(tmp, backend, f));
+        const tl = await readFile(join(tmp, backend, "timeline", id, f));
+        assert.deepStrictEqual(flat, tl, `${backend} flat ${f} != timeline copy`);
+      }
+    }
+    const story = await readJson(tmp, "nextcloud-sim", "timeline", id, "story.json");
+    assert.equal(story.body, "");
+    assert.equal(story.restricted.wrapped.length, 3);
+    const entitlements = await readJson(tmp, "nextcloud-sim", "timeline", id, "entitlements.json");
+    assert.equal(entitlements.storyId, id);
+    assert.deepStrictEqual(entitlements.entitled,
+      [{ readerId: "reader-a" }, { readerId: "reader-b" }, { readerId: "reader-c" }]);
+    // Every entitled reader opens the sealed body; anonymous stays restricted.
+    for (const [pair, readerId] of [[a, "reader-a"], [b, "reader-b"], [c, "reader-c"]] as const) {
+      const opened = tryOpenBody(story, pair.priv, readerId);
+      assert.equal(opened.status, "opened");
+      assert.equal((opened as { body: string }).body, "paywalled words");
+    }
+    assert.equal(tryOpenBody(story).status, "restricted");
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+    await rm(idsDir, { recursive: true, force: true });
+  }
+});
+
+test("post --entitle-readers combines with legacy flags and rejects misuse with exit 2", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "rooted-post-"));
+  const { generateKeyPairSync } = await import("node:crypto");
+  const { writeFile } = await import("node:fs/promises");
+  function x25519Pair() {
+    const pair = generateKeyPairSync("x25519");
+    return pair.publicKey.export({ type: "spki", format: "pem" }).toString();
+  }
+  async function exitCode(args: string[]): Promise<number | null> {
+    try {
+      await runPost(tmp, args);
+    } catch (e) {
+      return (e as { code?: number | null }).code ?? null;
+    }
+    return null;
+  }
+  try {
+    const pubA = x25519Pair();
+    const pubB = x25519Pair();
+    await writeFile(join(tmp, "reader-a.pub"), pubA);
+    await writeFile(join(tmp, "reader-b.pub"), pubB);
+    // Combined legacy + batch: 2 wrapped keys, 2 entitled ids.
+    const idsDir = await mkdtemp(join(tmpdir(), "rooted-post-ids-"));
+    const batchFile = join(tmp, "readers.json");
+    await writeFile(batchFile, JSON.stringify([{ readerId: "reader-b", pubkeyFile: join(tmp, "reader-b.pub") }]));
+    const savedIds = process.env.OWNPLACE_IDENTITY_DIR;
+    process.env.OWNPLACE_IDENTITY_DIR = idsDir;
+    try {
+      const { stdout } = await runPost(tmp, ["--title", "Paid", "--body", "words",
+        "--entitle-reader", "reader-a", "--reader-pubkey", join(tmp, "reader-a.pub"),
+        "--entitle-readers", batchFile]);
+      const id = (stdout.match(/story=\S+/) ?? [""])[0].replace("story=", "").trim();
+      const story = await readJson(tmp, "nextcloud-sim", "timeline", id, "story.json");
+      assert.equal(story.restricted.wrapped.length, 2);
+      const entitlements = await readJson(tmp, "nextcloud-sim", "timeline", id, "entitlements.json");
+      assert.deepStrictEqual(entitlements.entitled, [{ readerId: "reader-b" }, { readerId: "reader-a" }]);
+    } finally {
+      if (savedIds === undefined) delete process.env.OWNPLACE_IDENTITY_DIR;
+      else process.env.OWNPLACE_IDENTITY_DIR = savedIds;
+      await rm(idsDir, { recursive: true, force: true });
+    }
+    // Misuse: every case must fail with usage error exit 2.
+    const badJson = join(tmp, "bad.json");
+    await writeFile(badJson, "{not-json");
+    assert.equal(await exitCode(["--title", "T", "--body", "B", "--entitle-readers", badJson]), 2);
+    const emptyArr = join(tmp, "empty.json");
+    await writeFile(emptyArr, "[]");
+    assert.equal(await exitCode(["--title", "T", "--body", "B", "--entitle-readers", emptyArr]), 2);
+    const nonArr = join(tmp, "nonarr.json");
+    await writeFile(nonArr, '{"readerId":"x"}');
+    assert.equal(await exitCode(["--title", "T", "--body", "B", "--entitle-readers", nonArr]), 2);
+    const unsafeId = join(tmp, "unsafe.json");
+    await writeFile(unsafeId, JSON.stringify([{ readerId: "../evil", publicKey: pubA }]));
+    assert.equal(await exitCode(["--title", "T", "--body", "B", "--entitle-readers", unsafeId]), 2);
+    const missingKey = join(tmp, "missing-pubkey.json");
+    await writeFile(missingKey, JSON.stringify([{ readerId: "reader-a", pubkeyFile: join(tmp, "nope.pub") }]));
+    assert.equal(await exitCode(["--title", "T", "--body", "B", "--entitle-readers", missingKey]), 2);
+    const noKey = join(tmp, "no-key.json");
+    await writeFile(noKey, JSON.stringify([{ readerId: "reader-a" }]));
+    assert.equal(await exitCode(["--title", "T", "--body", "B", "--entitle-readers", noKey]), 2);
+    const dupes = join(tmp, "dupes.json");
+    await writeFile(dupes, JSON.stringify([
+      { readerId: "reader-a", publicKey: pubA },
+      { readerId: "reader-a", publicKey: pubB },
+    ]));
+    assert.equal(await exitCode(["--title", "T", "--body", "B", "--entitle-readers", dupes]), 2);
+    assert.equal(await exitCode(["--title", "T", "--body", "B", "--entitle-readers", join(tmp, "absent.json")]), 2);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});

@@ -2,6 +2,9 @@
 // and syndication to every configured backend. Used by the CLI (`post.ts`)
 // and the web write API (`apps/ownplace-web/src/server.ts`) so both write
 // through the SAME lane. Slice-2 paid gating: optional multi-reader sealed bodies via publishStory entitle/entitleReaders opts; web API stays public-only.
+// Slice-3 paid gating: gated packages also carry a signed entitlements.json
+// sidecar ({ storyId, entitled: [{ readerId }] }, ids only, no keys) bound by
+// the manifest hash plus Ed25519 signature; public posts carry no sidecar.
 
 import { randomBytes } from "node:crypto";
 import {
@@ -112,6 +115,37 @@ export function isSafeHistoryId(id: string): boolean {
 
 const HISTORY_FILES = ["kinfolk.json", "story.json", "manifest.json", "signature.json"] as const;
 
+// Slice-3 signed sidecar: ids only, no keys/secrets. Gated packages list it
+// in the manifest (hash + Ed25519 bound like kinfolk/story); public posts
+// emit no such file. Optional on read: required for gated packages,
+// forbidden for public ones (enforced in fetchVerifiedHistoryPackage).
+export const ENTITLEMENTS_FILE = "entitlements.json";
+
+export interface Entitlements {
+  storyId: string;
+  entitled: { readerId: string }[];
+}
+
+export function isEntitlements(value: unknown): value is Entitlements {
+  if (!value || typeof value !== "object") return false;
+  const doc = value as Record<string, unknown>;
+  if (typeof doc.storyId !== "string" || doc.storyId.length === 0) return false;
+  if (!Array.isArray(doc.entitled) || doc.entitled.length === 0) return false;
+  const seen = new Set<string>();
+  for (const entry of doc.entitled) {
+    if (!entry || typeof entry !== "object") return false;
+    const readerId = (entry as Record<string, unknown>).readerId;
+    if (!isSafeReaderId(readerId) || seen.has(readerId)) return false;
+    seen.add(readerId);
+  }
+  return true;
+}
+
+// Every filename a package may legitimately carry. Used only to keep public
+// skip reasons specific (never raw storage errors); required-ness is decided
+// by the read/verify path, not this list.
+const KNOWN_PACKAGE_FILES: readonly string[] = [...HISTORY_FILES, ENTITLEMENTS_FILE];
+
 function collectHistoryProblems(parsed: Record<string, unknown>): string[] {
   const problems: string[] = [];
   const manifest = parsed["manifest.json"] as
@@ -174,19 +208,20 @@ export function toPublicSkipReason(rawReason: string): string {
     if (fileMatch) {
       const kind = fileMatch[1] === "missing unreadable file" ? "unreadable file" : "invalid JSON";
       const name = fileMatch[2];
-      if ((HISTORY_FILES as readonly string[]).includes(name)) return `${kind}: ${name}`;
+      if (KNOWN_PACKAGE_FILES.includes(name)) return `${kind}: ${name}`;
       return kind;
     }
     if (part.includes("package id mismatch")) return "package id mismatch";
     if (part.includes("hash mismatch")) {
       const m = part.match(/hash mismatch:\s*([A-Za-z0-9._-]+)/);
-      if (m && (HISTORY_FILES as readonly string[]).includes(m[1])) return `hash mismatch: ${m[1]}`;
+      if (m && (KNOWN_PACKAGE_FILES as readonly string[]).includes(m[1])) return `hash mismatch: ${m[1]}`;
       return "hash mismatch";
     }
     if (part.includes("signature does not match manifest")) return "signature does not match manifest";
     if (part.includes("Ed25519 signature verification failed")) return "signature verification failed";
     if (part.includes("not Ed25519 signed")) return "not Ed25519 signed";
     if (part.includes("signature is malformed")) return "invalid signature";
+    if (part.includes("entitlements")) return "invalid entitlements";
     if (part.includes("manifest")) return "invalid manifest";
     if (part.includes("story author does not match")) return "author mismatch";
     if (part.includes("incomplete package")) return "incomplete package";
@@ -203,6 +238,7 @@ export interface VerifiedHistoryPackage {
   story: Story;
   manifest: Record<string, unknown> & { packageId: string };
   signature: Record<string, unknown>;
+  entitlements?: Entitlements;
 }
 
 // Verify one historical story package before display. Rejects missing or
@@ -225,11 +261,48 @@ export async function fetchVerifiedHistoryPackage(store: ObjectStore, id: string
       problems.push(`invalid JSON: ${f}`);
     }
   }
+  // Optional slice-3 sidecar: read before collectHistoryProblems so the
+  // generic manifest hash loop covers it (tampering fails closed). Read
+  // errors stay collected problems, never raw throws; absence is fine here
+  // (gated packages must carry it, checked below).
+  try {
+    const entitlementsText = new TextDecoder().decode(await store.readObject(`timeline/${id}/${ENTITLEMENTS_FILE}`));
+    try {
+      parsed[ENTITLEMENTS_FILE] = JSON.parse(entitlementsText);
+    } catch {
+      problems.push(`invalid JSON: ${ENTITLEMENTS_FILE}`);
+    }
+  } catch {
+    // No sidecar on disk.
+  }
   problems.push(...collectHistoryProblems(parsed));
   const storyDoc = parsed["story.json"] as { body?: unknown; restricted?: unknown } | undefined;
   if (storyDoc && storyDoc.restricted !== undefined) {
     if (!isSealedBody(storyDoc.restricted)) problems.push("gated envelope is malformed");
     else if (storyDoc.body !== "") problems.push("gated package contains plaintext body");
+  }
+  // Entitlements binding (slice 3): gated packages must list the sidecar in
+  // the manifest exactly once (hash-checked by the generic manifest loop
+  // above, so tampering fails closed), carry a well-formed file whose
+  // storyId matches the package, and public packages must carry none.
+  const manifestDoc = parsed["manifest.json"] as { objects?: unknown } | undefined;
+  const entitlementsListed = Array.isArray(manifestDoc?.objects)
+    ? (manifestDoc.objects as { path?: unknown }[]).filter((o) => o?.path === ENTITLEMENTS_FILE).length
+    : 0;
+  const entitlementsDoc = parsed[ENTITLEMENTS_FILE] as Entitlements | undefined;
+  if (storyDoc && storyDoc.restricted !== undefined) {
+    if (entitlementsListed !== 1) problems.push(`manifest must list ${ENTITLEMENTS_FILE} exactly once`);
+    if (entitlementsDoc === undefined) {
+      problems.push(`gated package is missing ${ENTITLEMENTS_FILE}`);
+    } else if (!isEntitlements(entitlementsDoc)) {
+      problems.push("entitlements is malformed");
+    } else if (entitlementsDoc.storyId !== id) {
+      problems.push(`entitlements story mismatch: entitlements "${entitlementsDoc.storyId}" does not match package "${id}"`);
+    }
+  } else if (storyDoc && storyDoc.restricted === undefined) {
+    if (entitlementsListed !== 0 || entitlementsDoc !== undefined) {
+      problems.push(`public package must not contain ${ENTITLEMENTS_FILE}`);
+    }
   }
   // Directory/story/manifest binding: a valid signed package copied under a
   // different timeline/<id>/ directory must not verify. The enumerated (or
@@ -248,6 +321,7 @@ export async function fetchVerifiedHistoryPackage(store: ObjectStore, id: string
     story: parsed["story.json"] as Story,
     manifest: parsed["manifest.json"] as VerifiedHistoryPackage["manifest"],
     signature: parsed["signature.json"] as Record<string, unknown>,
+    ...(entitlementsDoc !== undefined ? { entitlements: entitlementsDoc as Entitlements } : {}),
   };
 }
 
@@ -334,25 +408,33 @@ export function buildPackage(input: { title: string; body: string; authorId: str
     createdAt: input.createdAt,
   };
   const readers: EntitleReader[] = [...(opts.entitleReaders ?? []), ...(opts.entitle ? [opts.entitle] : [])];
+  // Slice-3 sidecar: ids only, no keys/secrets. Signed via the manifest like
+  // kinfolk/story so readers can discover entitlement without trial-decrypt.
+  let entitlements: Entitlements | undefined;
   if (readers.length > 0) {
     for (const r of readers) {
       if (!isSafeReaderId(r.readerId)) throw new Error("entitle reader id contains unsafe characters");
     }
     story.body = "";
     story.restricted = sealBodyForReaders(input.body, readers);
+    entitlements = { storyId: input.storyId, entitled: readers.map((r) => ({ readerId: r.readerId })) };
   }
   const manifest = createManifest(input.storyId, [
     { path: "kinfolk.json", contentType: "application/json", value: kinfolk },
     { path: "story.json", contentType: "application/json", value: story },
+    ...(entitlements
+      ? [{ path: ENTITLEMENTS_FILE, contentType: "application/json", value: entitlements }]
+      : []),
   ], "ed25519");
   const signature = signManifest(manifest, identity.privateKey);
   const files: Record<string, Uint8Array> = {
     "kinfolk.json": objectBytes(kinfolk),
     "story.json": objectBytes(story),
+    ...(entitlements ? { [ENTITLEMENTS_FILE]: objectBytes(entitlements) } : {}),
     "manifest.json": objectBytes(manifest),
     "signature.json": objectBytes(signature),
   };
-  return { kinfolk, story, manifest, signature, files };
+  return { kinfolk, story, manifest, signature, files, ...(entitlements ? { entitlements } : {}) };
 }
 
 export function makeStoryId(now: string): string {
