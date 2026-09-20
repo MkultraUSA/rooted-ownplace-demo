@@ -2,7 +2,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { hashObject } from "@rooted/protocol";
+import { hashObject, verifyManifestSignature } from "@rooted/protocol";
 import { LocalFolderStore, WebDavStore } from "@rooted/storage";
 import { KinfolkClient } from "./client.js";
 
@@ -103,6 +103,10 @@ export async function verifyParity(): Promise<ParityResult> {
       const manifest = parsed["manifest.json"] as { objects?: unknown; packageId?: unknown } | undefined;
       const signature = parsed["signature.json"] as { signedManifestSha256?: unknown } | undefined;
       if (manifest && Array.isArray(manifest.objects)) {
+        const names = (manifest.objects as { path?: unknown }[]).map((o) => o?.path);
+        for (const required of ["kinfolk.json", "story.json"]) {
+          if (names.filter((name) => name === required).length !== 1) problems_gd.push(`google-drive corrupt: manifest must list ${required} exactly once`);
+        }
         const byName: Record<string, unknown> = {
           "kinfolk.json": parsed["kinfolk.json"], "story.json": parsed["story.json"],
           "manifest.json": parsed["manifest.json"], "signature.json": parsed["signature.json"],
@@ -124,8 +128,16 @@ export async function verifyParity(): Promise<ParityResult> {
           problems_gd.push("google-drive corrupt: signature is malformed");
         } else if (signature.signedManifestSha256 !== hashObject(manifest)) {
           problems_gd.push("google-drive corrupt: signature does not match manifest");
+        } else if ((manifest as { signing?: string }).signing !== "ed25519") {
+          problems_gd.push("google-drive corrupt: package is not Ed25519 signed");
+        } else if (!verifyManifestSignature(manifest, signature, parsed["kinfolk.json"])) {
+          problems_gd.push("google-drive corrupt: Ed25519 signature verification failed");
         }
       }
+      const kinfolk = parsed["kinfolk.json"] as { id?: unknown } | undefined;
+      const story = parsed["story.json"] as { authorId?: unknown } | undefined;
+      if (kinfolk && story && (typeof kinfolk.id !== "string" || story.authorId !== kinfolk.id)) problems_gd.push("google-drive corrupt: story author does not match Kinfolk identity");
+      if (!manifest || !signature || !kinfolk || !story) problems_gd.push("google-drive corrupt: incomplete package");
       if (problems_gd.length) {
         problems.push(...problems_gd);
       } else {

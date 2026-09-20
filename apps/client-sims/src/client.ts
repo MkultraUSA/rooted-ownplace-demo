@@ -1,4 +1,4 @@
-import { hashObject } from "@rooted/protocol";
+import { hashObject, verifyManifestSignature } from "@rooted/protocol";
 import type { ObjectStore } from "@rooted/storage";
 
 export interface VerifiedPackage {
@@ -36,6 +36,10 @@ export class KinfolkClient {
     const manifest = parsed["manifest.json"] as VerifiedPackage["manifest"] | undefined;
     const signature = parsed["signature.json"] as VerifiedPackage["signature"] | undefined;
     if (manifest && Array.isArray(manifest.objects)) {
+      const names = manifest.objects.map((o) => o?.path);
+      for (const required of ["kinfolk.json", "story.json"]) {
+        if (names.filter((name) => name === required).length !== 1) problems.push(`manifest must list ${required} exactly once`);
+      }
       for (const obj of manifest.objects) {
         if (typeof obj?.path !== "string" || typeof obj?.sha256 !== "string") {
           problems.push("manifest has malformed object entry");
@@ -53,8 +57,16 @@ export class KinfolkClient {
         problems.push("signature is malformed: signedManifestSha256 is not a string");
       } else if (signature.signedManifestSha256 !== hashObject(manifest)) {
         problems.push("signature does not match manifest");
+      } else if ((manifest as { signing?: string }).signing !== "ed25519") {
+        problems.push("package is not Ed25519 signed");
+      } else if (!verifyManifestSignature(manifest, signature, parsed["kinfolk.json"])) {
+        problems.push("Ed25519 signature verification failed");
       }
     }
+    const kinfolk = parsed["kinfolk.json"] as { id?: unknown } | undefined;
+    const story = parsed["story.json"] as { authorId?: unknown } | undefined;
+    if (kinfolk && story && (typeof kinfolk.id !== "string" || story.authorId !== kinfolk.id)) problems.push("story author does not match Kinfolk identity");
+    if (!manifest || !signature || !kinfolk || !story) problems.push("incomplete package");
     if (problems.length) throw new Error(`${this.backend}: ${problems.join("; ")}`);
     return {
       backend: this.backend,

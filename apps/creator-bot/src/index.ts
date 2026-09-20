@@ -18,11 +18,11 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
   createManifest,
-  hashObject,
+  loadOrCreateIdentity,
+  signManifest,
   objectBytes,
   type Kinfolk,
   type Story,
-  type Signature,
 } from "@rooted/protocol";
 import { LocalFolderStore, WebDavStore, type ObjectStore } from "@rooted/storage";
 
@@ -33,10 +33,12 @@ const root = process.env.PUBLISH_ROOT
   ? resolve(process.env.PUBLISH_ROOT)
   : resolve(repoRoot, "demo/stores");
 
+const identity = loadOrCreateIdentity("kinfolk-alex");
 const kinfolk: Kinfolk = {
   id: "kinfolk-alex",
   displayName: "Alex Rowan",
   bio: "Building a more rooted internet.",
+  publicKey: identity.publicKey,
 };
 const story: Story = {
   id: "story-first-light",
@@ -51,12 +53,8 @@ const content = [
   { path: "kinfolk.json", contentType: "application/json", value: kinfolk },
   { path: "story.json", contentType: "application/json", value: story },
 ];
-const manifest = createManifest(packageId, content);
-const signature: Signature = {
-  algorithm: "demo-placeholder",
-  signedManifestSha256: hashObject(manifest),
-  note: "Demo boundary only: this is not a cryptographic signature and content is not encrypted.",
-};
+const manifest = createManifest(packageId, content, "ed25519");
+const signature = signManifest(manifest, identity.privateKey);
 
 const files: Record<string, Uint8Array> = {};
 for (const object of content) files[object.path] = objectBytes(object.value);

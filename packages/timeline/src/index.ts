@@ -6,11 +6,11 @@
 import { randomBytes } from "node:crypto";
 import {
   createManifest,
-  hashObject,
+  loadOrCreateIdentity,
+  signManifest,
   objectBytes,
   type Kinfolk,
   type Story,
-  type Signature,
 } from "@rooted/protocol";
 import { LocalFolderStore, WebDavStore, type ObjectStore } from "@rooted/storage";
 import { mkdir } from "node:fs/promises";
@@ -149,7 +149,8 @@ export async function readIndex(store: ObjectStore, label: string, now: string):
 }
 
 export function buildPackage(input: { title: string; body: string; authorId: string; authorName: string; createdAt: string; storyId: string }) {
-  const kinfolk: Kinfolk = { id: input.authorId, displayName: input.authorName };
+  const identity = loadOrCreateIdentity(input.authorId);
+  const kinfolk: Kinfolk = { id: input.authorId, displayName: input.authorName, publicKey: identity.publicKey };
   const story: Story = {
     id: input.storyId,
     title: input.title,
@@ -161,12 +162,8 @@ export function buildPackage(input: { title: string; body: string; authorId: str
   const manifest = createManifest(input.storyId, [
     { path: "kinfolk.json", contentType: "application/json", value: kinfolk },
     { path: "story.json", contentType: "application/json", value: story },
-  ]);
-  const signature: Signature = {
-    algorithm: "demo-placeholder",
-    signedManifestSha256: hashObject(manifest),
-    note: "Demo boundary only: this is not a cryptographic signature and content is not encrypted.",
-  };
+  ], "ed25519");
+  const signature = signManifest(manifest, identity.privateKey);
   const files: Record<string, Uint8Array> = {
     "kinfolk.json": objectBytes(kinfolk),
     "story.json": objectBytes(story),
