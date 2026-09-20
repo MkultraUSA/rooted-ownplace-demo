@@ -8,6 +8,7 @@ import { LocalFolderStore } from "@rooted/storage";
 import {
   buildPackage,
   fetchVerifiedHistoryPackage,
+  isEntitlements,
   publishStory,
   readIndex,
   tryOpenStory,
@@ -233,5 +234,131 @@ test("multi-reader publish lands identical bytes on both sims", async () => {
       assert.equal(tryOpenStory(story, stranger.priv, "stranger-x").status, "not-entitled");
       assert.equal(tryOpenStory(story).status, "restricted");
     }
+  });
+});
+
+test("slice-3: three-reader entitlements sidecar is signed and verified", async () => {
+  await withIdDir(async (dir) => {
+    const a = x25519Pair();
+    const b = x25519Pair();
+    const c = x25519Pair();
+    const pkg = buildPackage(
+      {
+        title: "Paid post", body: "paywalled words", authorId: "kinfolk-alex",
+        authorName: "Alex", createdAt: "2026-09-20T00:00:00.000Z", storyId: "story-ent-3",
+      },
+      {
+        entitleReaders: [
+          { readerId: "reader-a", readerPublicKey: a.pub },
+          { readerId: "reader-b", readerPublicKey: b.pub },
+          { readerId: "reader-c", readerPublicKey: c.pub },
+        ],
+      },
+    );
+    // Sidecar present in files, ids only (no keys/secrets).
+    assert.ok("entitlements.json" in pkg.files);
+    assert.ok(pkg.entitlements);
+    assert.equal(pkg.entitlements.storyId, "story-ent-3");
+    assert.deepStrictEqual(pkg.entitlements.entitled, [
+      { readerId: "reader-a" }, { readerId: "reader-b" }, { readerId: "reader-c" },
+    ]);
+    assert.ok(isEntitlements(pkg.entitlements));
+    const sidecarText = new TextDecoder().decode(pkg.files["entitlements.json"]);
+    assert.equal(sidecarText.includes("BEGIN PUBLIC KEY"), false);
+    assert.ok(sidecarText.includes("reader-a"));
+    // Manifest lists it exactly once with a matching hash (Ed25519 bound).
+    const listed = pkg.manifest.objects.filter((o) => o.path === "entitlements.json");
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].sha256, hashObject(pkg.entitlements));
+    // Round-trips through verify with the binding intact.
+    const root = join(dir, "stores");
+    const store = new LocalFolderStore(join(root, "nextcloud-sim"));
+    for (const [name, bytes] of Object.entries(pkg.files)) {
+      await store.writeObject(`timeline/story-ent-3/${name}`, bytes);
+    }
+    const verified = await fetchVerifiedHistoryPackage(store, "story-ent-3");
+    assert.equal(verified.entitlements?.storyId, "story-ent-3");
+    assert.deepStrictEqual(verified.entitlements?.entitled, [
+      { readerId: "reader-a" }, { readerId: "reader-b" }, { readerId: "reader-c" },
+    ]);
+  });
+});
+
+test("slice-3: tampered or mismatched entitlements fail verify as collected problems", async () => {
+  await withIdDir(async (dir) => {
+    const a = x25519Pair();
+    const author = ed25519Pair();
+    const root = join(dir, "stores");
+    async function writePkg(id: string, files: Record<string, unknown>): Promise<void> {
+      const store = new LocalFolderStore(join(root, "nextcloud-sim"));
+      for (const [name, value] of Object.entries(files)) {
+        await store.writeObject(`timeline/${id}/${name}`, objectBytes(value));
+      }
+    }
+    function signedPkg(id: string, story: unknown, entitlements: unknown, opts: { listSidecar?: boolean } = {}) {
+      const kinfolk = { id: "kinfolk-x", displayName: "X", publicKey: author.pub };
+      const objects: { path: string; contentType: string; value: unknown }[] = [
+        { path: "kinfolk.json", contentType: "application/json", value: kinfolk },
+        { path: "story.json", contentType: "application/json", value: story },
+      ];
+      if (opts.listSidecar !== false && entitlements !== undefined) {
+        objects.push({ path: "entitlements.json", contentType: "application/json", value: entitlements });
+      }
+      const manifest = createManifest(id, objects, "ed25519");
+      const signature = signManifest(manifest, author.priv);
+      const files: Record<string, unknown> = {
+        "kinfolk.json": kinfolk, "story.json": story,
+        "manifest.json": manifest, "signature.json": signature,
+      };
+      if (entitlements !== undefined) files["entitlements.json"] = entitlements;
+      return files;
+    }
+    const { sealBody } = await import("@rooted/protocol");
+    const env = sealBody("secret", a.pub, "reader-a");
+    const gatedStory = (id: string) => ({
+      id, title: "t", body: "", media: [],
+      authorId: "kinfolk-x", createdAt: "2026-09-20T00:00:00.000Z", restricted: env,
+    });
+    // Tampered bytes: valid signature over different content -> hash mismatch.
+    const good = signedPkg("story-ent-tamper", gatedStory("story-ent-tamper"),
+      { storyId: "story-ent-tamper", entitled: [{ readerId: "reader-a" }] });
+    await writePkg("story-ent-tamper", {
+      ...good,
+      "entitlements.json": { storyId: "story-ent-tamper", entitled: [{ readerId: "reader-evil" }] },
+    });
+    // Mismatched binding: well-formed + correctly signed, but wrong storyId.
+    await writePkg("story-ent-mismatch", signedPkg("story-ent-mismatch",
+      gatedStory("story-ent-mismatch"),
+      { storyId: "story-someone-else", entitled: [{ readerId: "reader-a" }] }));
+    // Missing sidecar on a gated package.
+    const missing = signedPkg("story-ent-missing", gatedStory("story-ent-missing"),
+      { storyId: "story-ent-missing", entitled: [{ readerId: "reader-a" }] }, { listSidecar: false });
+    delete missing["entitlements.json"];
+    await writePkg("story-ent-missing", missing);
+    const store = new LocalFolderStore(join(root, "nextcloud-sim"));
+    // Collected problems: "<id>: ..." (never a raw error).
+    await assert.rejects(fetchVerifiedHistoryPackage(store, "story-ent-tamper"), /story-ent-tamper: .*entitlements\.json/);
+    await assert.rejects(fetchVerifiedHistoryPackage(store, "story-ent-mismatch"), /story-ent-mismatch: .*entitlements story mismatch/);
+    await assert.rejects(fetchVerifiedHistoryPackage(store, "story-ent-missing"), /story-ent-missing: .*missing entitlements\.json/);
+  });
+});
+
+test("slice-3: public posts emit no entitlements file and still verify", async () => {
+  await withIdDir(async (dir) => {
+    const pkg = buildPackage({
+      title: "Free post", body: "everyone reads", authorId: "kinfolk-alex",
+      authorName: "Alex", createdAt: "2026-09-20T00:00:00.000Z", storyId: "story-ent-free",
+    });
+    assert.equal("entitlements.json" in pkg.files, false);
+    assert.ok(!pkg.manifest.objects.some((o) => o.path === "entitlements.json"));
+    assert.equal("entitlements" in pkg, false);
+    const root = join(dir, "stores");
+    const store = new LocalFolderStore(join(root, "nextcloud-sim"));
+    for (const [name, bytes] of Object.entries(pkg.files)) {
+      await store.writeObject(`timeline/story-ent-free/${name}`, bytes);
+    }
+    const verified = await fetchVerifiedHistoryPackage(store, "story-ent-free");
+    assert.equal(verified.entitlements, undefined);
+    assert.equal(verified.story.body, "everyone reads");
   });
 });
