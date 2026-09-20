@@ -15,7 +15,7 @@ entry (title/author/timestamp) but not the body.
   byte-identity. Paid gating breaks byte-identity by design (different
   readers see different bytes), so `verify-parity` will need a
   per-audience mode, not a single fingerprint.
-- `signature.json` is a demo placeholder (HMAC, not Ed25519). Any
+- `signature.json` is a demo placeholder (demo-placeholder hash reference, not a signature — no HMAC, no Ed25519). Any
   entitlement claim must wait for real signatures — otherwise "paid"
   is unenforceable theater. Do NOT ship gating on placeholder crypto.
 - Backends are dumb stores (WebDAV folders, Drive folders, rclone).
