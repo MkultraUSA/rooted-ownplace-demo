@@ -3,8 +3,8 @@
 // — the SAME lane as the CLI — so web posts syndicate to every backend.
 //
 // Endpoints:
-//   GET  /api/timeline?backend=nextcloud-sim        timeline index
-//   GET  /api/story?backend=B&id=ID                 single story package
+//   GET  /api/timeline?backend=nextcloud-sim        verified history timeline
+//   GET  /api/story?backend=B&id=ID                 verified history story
 //   GET  /api/contacts                              contact list
 //   POST /api/post        {title, body, authorId?, authorName?}
 //   POST /api/contacts    {id, displayName}  |  DELETE /api/contacts?id=ID
@@ -25,8 +25,11 @@ import {
   addContact,
   backendsFromEnv,
   defaultRepoRoot,
+  isSafeHistoryId,
   publishStory,
+  readAuthenticatedTimeline,
   readContacts,
+  readVerifiedHistoryStory,
   removeContact,
   validateContact,
   validateInput,
@@ -163,7 +166,10 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const { pathname } = url;
 
-    // --- Reads (public) ---
+    // --- Reads (public, history authenticated) ---
+    // Timeline entries derive solely from Ed25519-verified history packages.
+    // Unsigned timeline.json values are never presented as authenticated;
+    // tampered, unsigned, or legacy-placeholder entries are excluded.
     if (req.method === "GET" && pathname === "/api/timeline") {
       const backend = url.searchParams.get("backend") ?? "nextcloud-sim";
       if (backend !== "nextcloud-sim" && backend !== "google-drive-sim") {
@@ -171,8 +177,8 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       try {
-        const raw = new TextDecoder().decode(await simStore(backend).readObject("timeline.json"));
-        send(res, 200, JSON.parse(raw));
+        const { index } = await readAuthenticatedTimeline(simStore(backend), backend, new Date().toISOString());
+        send(res, 200, index);
       } catch {
         send(res, 404, { error: "no timeline" });
       }
@@ -185,13 +191,14 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const id = url.searchParams.get("id") ?? "";
-      if (!id || id.includes("/") || id.includes("\\") || id.includes("..") || id.includes("\0")) {
+      if (!id || !isSafeHistoryId(id) || id.includes("\0")) {
         send(res, 400, { error: "bad id" });
         return;
       }
       try {
-        const store = simStore(backend);
-        const story = JSON.parse(new TextDecoder().decode(await store.readObject(`timeline/${id}/story.json`)));
+        // Verified history package only: rejects tampered, missing-signature,
+        // and legacy demo-placeholder packages with 404 (never serve them).
+        const story = await readVerifiedHistoryStory(simStore(backend), id);
         send(res, 200, story);
       } catch {
         send(res, 404, { error: "not found" });

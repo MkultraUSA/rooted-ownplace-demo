@@ -1,6 +1,6 @@
 # Architecture
 
-The protocol is the center of Rooted. A creator bot creates `kinfolk.json` and `story.json`, then creates a manifest containing the SHA-256 hash of each canonical JSON object. A signature envelope references the manifest hash, but is explicitly marked `demo-placeholder`; it is not a cryptographic signature. No encryption is performed in this demo.
+The protocol is the center of Rooted. A creator bot creates `kinfolk.json` and `story.json`, then creates a manifest containing the SHA-256 hash of each canonical JSON object. Current packages sign the manifest with an Ed25519 Kinfolk identity; the signature envelope references the manifest hash. No encryption is performed in this demo. Timeline reads authenticate every history package (manifest/signature/content hashes) before display: `timeline.json` is an untrusted cache hint, and display metadata derives solely from verified `timeline/<id>/` packages. Legacy `demo-placeholder` envelopes are rejected, never displayed as authenticated.
 
 The publisher writes those four objects through the same `ObjectStore` interface to `LocalFolderStore` instances rooted at `demo/stores/nextcloud-sim` and `demo/stores/google-drive-sim`. Since the bytes are created once and written to each store, the two packages are identical.
 
