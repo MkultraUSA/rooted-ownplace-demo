@@ -10,9 +10,10 @@
 //   POST /api/contacts    {id, displayName}  |  DELETE /api/contacts?id=ID
 //
 // Write auth: single-operator demo token via OWNPLACE_WRITE_TOKEN env.
-// Requests without a matching `Authorization: Bearer <token>` get 401 for
-// POST/DELETE only; reads stay public. When the env var is unset, writes
-// are allowed locally with a console warning (dev convenience, not a claim).
+// Login mints an HttpOnly session cookie (Secure when COOKIE_SECURE=1);
+// Bearer tokens are also accepted. POST/DELETE get 401 without auth;
+// reads stay public. When the env var is unset, writes are allowed locally
+// with a console warning (dev convenience, not a claim).
 
 import { randomBytes } from "node:crypto";
 import http from "node:http";
@@ -86,8 +87,22 @@ function timingSafeEqual(a: string, b: string): boolean {
 const sessions = new Map<string, number>();
 const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
 
+function sweepSessions(now = Date.now()): void {
+  for (const [token, created] of sessions) {
+    if (now - created > SESSION_TTL_MS) sessions.delete(token);
+  }
+}
+
+// COOKIE_SECURE=1 appends Secure so browsers only send the cookie over TLS.
+const cookieSecure = process.env.COOKIE_SECURE === "1";
+function sessionCookie(value: string | null): string {
+  const base = value === null ? "ownplace_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0" : "ownplace_session=" + value + "; HttpOnly; Path=/; SameSite=Lax";
+  return cookieSecure ? base + "; Secure" : base;
+}
+
 function newSession(): string {
   // CSPRNG session IDs: Math.random is predictable and must never mint secrets.
+  sweepSessions();
   const token = randomBytes(32).toString("hex");
   sessions.set(token, Date.now());
   return token;
@@ -108,6 +123,7 @@ function destroySession(session: string): void {
 
 function isAuthenticated(req: http.IncomingMessage): boolean {
   if (!writeToken) return true; // dev mode (warned at startup)
+  sweepSessions();
   const header = req.headers.authorization ?? "";
   if (header.startsWith("Bearer ") && timingSafeEqual(header.slice(7), writeToken)) return true;
   const session = readSessionCookie(req);
@@ -197,7 +213,7 @@ const server = http.createServer(async (req, res) => {
       const session = newSession();
       res.writeHead(200, {
         "content-type": "application/json",
-        "set-cookie": `ownplace_session=${session}; HttpOnly; Path=/; SameSite=Lax`,
+        "set-cookie": sessionCookie(session),
       });
       res.end(JSON.stringify({ ok: true }));
       return;
@@ -207,7 +223,7 @@ const server = http.createServer(async (req, res) => {
       if (session) destroySession(session);
       res.writeHead(200, {
         "content-type": "application/json",
-        "set-cookie": "ownplace_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0",
+        "set-cookie": sessionCookie(null),
       });
       res.end(JSON.stringify({ ok: true }));
       return;
@@ -255,7 +271,7 @@ const server = http.createServer(async (req, res) => {
       const store = simStore("nextcloud-sim");
       if (req.method === "DELETE") {
         const id = (url.searchParams.get("id") ?? "").trim();
-        if (!id || id.includes("/") || id.includes("\\") || id.includes("..")) {
+        if (!id || id.includes("/") || id.includes("\\") || id.includes("..") || id.includes("\0")) {
           send(res, 400, { error: "bad id" });
           return;
         }
@@ -271,8 +287,12 @@ const server = http.createServer(async (req, res) => {
       let input: unknown;
       try {
         input = await readJsonBody(req);
-      } catch {
-        send(res, 400, { error: "invalid JSON body" });
+      } catch (e) {
+        if (e instanceof BodyTooLargeError) {
+          send(res, 413, { error: "body too large" });
+        } else {
+          send(res, 400, { error: "invalid JSON body" });
+        }
         return;
       }
       try {

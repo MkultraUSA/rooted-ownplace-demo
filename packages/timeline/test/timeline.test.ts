@@ -22,6 +22,8 @@ test("validateInput trims and enforces caps", () => {
   assert.throws(() => validateInput({ title: "x".repeat(141), body: "ok" }), /too long/);
   assert.throws(() => validateInput({ title: "ok", body: "x".repeat(5001) }), /too long/);
   assert.throws(() => validateInput({ title: "t", body: "b", authorId: "../evil" }), /unsafe/);
+  assert.throws(() => validateInput({ title: "t", body: "b", authorId: 42 as unknown as string }), /must be a string/);
+  assert.throws(() => validateInput({ title: "t", body: "b", authorName: 42 as unknown as string }), /must be a string/);
 });
 
 test("buildPackage produces verifiable manifest", async () => {
