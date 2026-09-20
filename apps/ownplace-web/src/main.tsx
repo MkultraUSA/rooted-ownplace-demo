@@ -4,7 +4,7 @@ import "./style.css";
 
 type TimelineEntry = { id: string; title: string; authorId: string; createdAt: string; verified?: boolean };
 type Timeline = { stories: TimelineEntry[] };
-type Story = { id: string; title: string; body: string; createdAt: string; authorId: string };
+type Story = { id: string; title: string; body: string; createdAt: string; authorId: string; restricted?: unknown };
 type Contact = { id: string; displayName: string; addedAt: string };
 type ContactList = { contacts: Contact[] };
 
@@ -268,7 +268,7 @@ function BackendColumn({ backend, refresh }: { backend: string; refresh: number 
               <div key={e.id} className="story">
                 <p className="date">{formatDate(e.createdAt)} · verified signature</p>
                 <h3>{e.title}</h3>
-                {s ? <p>{s.body}</p> : <p>Story unavailable or failed verification for this entry.</p>}
+                {s ? (s.restricted !== undefined ? <p>Restricted to entitled Kinfolk: title and metadata are public, the body is sealed.</p> : <p>{s.body}</p>) : <p>Story unavailable or failed verification for this entry.</p>}
                 <footer>
                   <code>{e.id}</code>
                 </footer>
