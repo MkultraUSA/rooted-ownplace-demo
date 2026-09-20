@@ -15,6 +15,7 @@ import {
   readContacts,
   readVerifiedHistoryStory,
   removeContact,
+  toPublicSkipReason,
   validateContact,
   validateInput,
 } from "../src/index.js";
@@ -194,6 +195,62 @@ test("history ids are path-safe and verified story read works", async () => {
     assert.equal(isSafeHistoryId("../evil"), false);
     assert.equal((await readVerifiedHistoryStory(store, res.storyId)).title, "Safe");
     await assert.rejects(() => readVerifiedHistoryStory(store, "../evil"), /unsafe/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("copied history package under a different directory id is rejected", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "rooted-auth-"));
+  try {
+    const res = await publishOne(tmp, "Original");
+    const { cp } = await import("node:fs/promises");
+    const copyId = `${res.storyId}-copy`;
+    assert.equal(isSafeHistoryId(copyId), true);
+    await cp(
+      join(tmp, "nextcloud-sim", "timeline", res.storyId),
+      join(tmp, "nextcloud-sim", "timeline", copyId),
+      { recursive: true }
+    );
+    const store = new LocalFolderStore(join(tmp, "nextcloud-sim"));
+    // Original still verifies; the copy must not (directory vs signed ids disagree).
+    assert.equal((await readVerifiedHistoryStory(store, res.storyId)).id, res.storyId);
+    await assert.rejects(() => fetchVerifiedHistoryPackage(store, copyId), /package id mismatch/);
+    await assert.rejects(() => readVerifiedHistoryStory(store, copyId), /package id mismatch/);
+    const { index, skipped } = await readAuthenticatedTimeline(store, "nextcloud-sim", "2026-09-20T00:00:00.000Z");
+    // No duplicate verified card and no broken /api/story link for the copy.
+    assert.equal(index.stories.length, 1);
+    assert.equal(index.stories[0].id, res.storyId);
+    assert.equal(skipped.length, 1);
+    assert.equal(skipped[0].id, copyId);
+    assert.match(skipped[0].reason, /package id mismatch/);
+    assert.equal(index.skipped?.length, 1);
+    assert.match(index.skipped?.[0].reason ?? "", /package id mismatch/);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("public timeline skipped reasons do not leak raw storage errors", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "rooted-auth-"));
+  try {
+    const res = await publishOne(tmp);
+    await rm(join(tmp, "nextcloud-sim", "timeline", res.storyId, "signature.json"), { force: true });
+    const store = new LocalFolderStore(join(tmp, "nextcloud-sim"));
+    const { index, skipped } = await readAuthenticatedTimeline(store, "nextcloud-sim", "2026-09-20T00:00:00.000Z");
+    assert.equal(index.stories.length, 0);
+    assert.equal(skipped.length, 1);
+    // Internal diagnostics keep the raw detail for operators.
+    assert.match(skipped[0].reason, /missing unreadable file/);
+    // Public shape served by GET /api/timeline stays path-free.
+    const pub = index.skipped?.[0].reason ?? "";
+    assert.match(pub, /unreadable file: signature\.json/);
+    assert.doesNotMatch(pub, /ENOENT/);
+    assert.doesNotMatch(pub, /tmp/);
+    assert.doesNotMatch(pub, /\(/);
+    assert.doesNotMatch(pub, /\//);
+    // Unknown internals collapse to a generic, path-free token.
+    assert.equal(toPublicSkipReason(`${res.storyId}: ENOENT open '/tmp/secret-path'`), "unverified package");
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

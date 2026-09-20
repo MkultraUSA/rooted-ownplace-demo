@@ -152,12 +152,49 @@ function collectHistoryProblems(parsed: Record<string, unknown>): string[] {
     }
   }
   const kinfolk = parsed["kinfolk.json"] as { id?: unknown } | undefined;
-  const story = parsed["story.json"] as { authorId?: unknown } | undefined;
+  const story = parsed["story.json"] as { authorId?: unknown; id?: unknown } | undefined;
   if (kinfolk && story && (typeof kinfolk.id !== "string" || story.authorId !== kinfolk.id)) {
     problems.push("story author does not match Kinfolk identity");
   }
   if (!manifest || !signature || !kinfolk || !story) problems.push("incomplete package");
   return problems;
+}
+
+export function toPublicSkipReason(rawReason: string): string {
+  // Public timeline shape must not leak raw file/storage errors (OS messages,
+  // errno, local absolute paths). Map each "; "-separated problem to a stable,
+  // path-free token; unknown internals collapse to "unverified package".
+  const withoutIdPrefix = rawReason.includes(": ")
+    ? rawReason.slice(rawReason.indexOf(": ") + 2)
+    : rawReason;
+  const parts = withoutIdPrefix.split("; ").map((p) => p.trim()).filter(Boolean);
+  const mapped = parts.map((part) => {
+    const fileMatch = part.match(/^(missing unreadable file|invalid JSON):\s*([A-Za-z0-9._-]+)/);
+    if (fileMatch) {
+      const kind = fileMatch[1] === "missing unreadable file" ? "unreadable file" : "invalid JSON";
+      const name = fileMatch[2];
+      if ((HISTORY_FILES as readonly string[]).includes(name)) return `${kind}: ${name}`;
+      return kind;
+    }
+    if (part.includes("package id mismatch")) return "package id mismatch";
+    if (part.includes("hash mismatch")) {
+      const m = part.match(/hash mismatch:\s*([A-Za-z0-9._-]+)/);
+      if (m && (HISTORY_FILES as readonly string[]).includes(m[1])) return `hash mismatch: ${m[1]}`;
+      return "hash mismatch";
+    }
+    if (part.includes("signature does not match manifest")) return "signature does not match manifest";
+    if (part.includes("Ed25519 signature verification failed")) return "signature verification failed";
+    if (part.includes("not Ed25519 signed")) return "not Ed25519 signed";
+    if (part.includes("signature is malformed")) return "invalid signature";
+    if (part.includes("manifest")) return "invalid manifest";
+    if (part.includes("story author does not match")) return "author mismatch";
+    if (part.includes("incomplete package")) return "incomplete package";
+    if (part.includes("malformed story fields")) return "malformed story fields";
+    if (part.includes("unsafe story id")) return "unsafe id";
+    return "unverified package";
+  });
+  const deduped = [...new Set(mapped)];
+  return deduped.length ? deduped.join("; ") : "unverified package";
 }
 
 export interface VerifiedHistoryPackage {
@@ -188,6 +225,17 @@ export async function fetchVerifiedHistoryPackage(store: ObjectStore, id: string
     }
   }
   problems.push(...collectHistoryProblems(parsed));
+  // Directory/story/manifest binding: a valid signed package copied under a
+  // different timeline/<id>/ directory must not verify. The enumerated (or
+  // requested) directory id, signed story.id, and signed manifest.packageId
+  // must all agree before the package is accepted.
+  const signedStoryId = (parsed["story.json"] as { id?: unknown } | undefined)?.id;
+  const signedPackageId = (parsed["manifest.json"] as { packageId?: unknown } | undefined)?.packageId;
+  if (signedStoryId !== id || signedPackageId !== id) {
+    problems.push(
+      `package id mismatch: directory "${id}" vs story "${String(signedStoryId)}" vs manifest "${String(signedPackageId)}"`
+    );
+  }
   if (problems.length) throw new Error(`${id}: ${problems.join("; ")}`);
   return {
     kinfolk: parsed["kinfolk.json"] as Kinfolk,
@@ -229,12 +277,15 @@ export async function readAuthenticatedTimeline(
       if (typeof story?.id === "string" && typeof story?.title === "string" &&
           typeof story?.authorId === "string" && typeof story?.createdAt === "string" &&
           !Number.isNaN(Date.parse(story.createdAt))) {
-        entries.push({ id: story.id, title: story.title, authorId: story.authorId, createdAt: story.createdAt, verified: true });
+        // Directory, story, and manifest ids already agree (enforced in
+        // fetchVerifiedHistoryPackage); the directory id is authoritative.
+        entries.push({ id, title: story.title, authorId: story.authorId, createdAt: story.createdAt, verified: true });
       } else {
         skipped.push({ id, reason: "verified package has malformed story fields" });
       }
     } catch (e) {
       // Unverified history entry: skip, never fail the whole read.
+      // Internal diagnostics keep raw detail; the public index below is sanitized.
       skipped.push({ id, reason: (e as Error).message });
     }
   }
@@ -244,7 +295,10 @@ export async function readAuthenticatedTimeline(
   } else if (entries.length > 0) {
     console.log(`rebuilt ${label} index from ${entries.length} on-disk ${entries.length === 1 ? "story" : "stories"}`);
   }
-  return { index: { protocol: "rooted/v0.1", kind: "timeline", updatedAt: now, stories: entries, skipped }, skipped };
+  // Public shape: never return raw file/storage errors (OS messages, errno,
+  // local absolute paths). Internal `skipped` keeps full diagnostics.
+  const publicSkipped = skipped.map((s) => ({ id: s.id, reason: toPublicSkipReason(s.reason) }));
+  return { index: { protocol: "rooted/v0.1", kind: "timeline", updatedAt: now, stories: entries, skipped: publicSkipped }, skipped };
 }
 
 export async function readIndex(store: ObjectStore, label: string, now: string): Promise<TimelineIndex> {
