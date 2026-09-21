@@ -60,7 +60,7 @@ Attestation artifact (format decided, enforcement deferred): a record of
 {readerId, readerPublicKey, authorId, scope, attestedAt} held by the
 author client. Consumption is already implemented: attested pairs feed
 the existing `--entitle-reader(s)` flow at next publish (M3 sidecar),
-so the path works end to end in demo today.
+so the path works end to end in demo today (demo-grade only, not enforceable).
 
 Revocation: rotate the data/group key + republish (unchanged).
 
