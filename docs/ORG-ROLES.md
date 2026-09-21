@@ -5,10 +5,13 @@ recorded here so agents and reviewers share one reference.
 
 ## Roles
 
-- **Kevin (MkultraUSA)** — Owner. People, billing, seats, final word on
-  scope. The only human who approves merges, transfers, and settings.
-- **Radics** — Org owner/coder. Bot-authored branches (`radics/*`), blind
-  review verdicts, implementation. Pushes code only, never merges.
+- **Kevin (MkultraUSA)** — Human owner. People, billing, seats, final
+  word on scope. The only one who approves merges, transfers, settings —
+  "Owner" below always means Kevin unless "org owner" says otherwise.
+- **Radics** — Org owner/coder (GitHub org-owner role, operated as the
+  bot account). Authors `radics/*` branches, posts blind-review verdicts.
+  By convention Radics never merges — enforced socially, not technically
+  (public repos cannot carry that ruleset).
 - **Agent0 (this supervisor) / MkultraUSA reviewer hat** — Scrum Master
   and GitHub reviewer. Runs the lane: board walks, one work item per
   session, proofs before claims, handoffs between sessions.
@@ -32,8 +35,11 @@ recorded here so agents and reviewers share one reference.
 ## Decision gates (explicit)
 
 1. No repo, org-config, or key/secret change lands without Kevin approval.
-2. Owner merges every PR (never bots); each merge needs 1 approving
+2. Kevin merges every PR (never bots); each merge needs 1 approving
    review + green `demo` check (ruleset `review-lane-main` enforces it).
+   Approval mechanics: the ruleset approval is the Radics GitHub review
+   (Agent0 has no GitHub identity — its review runs through the Radics
+   account); the merge click is always Kevin's.
 3. Branch protections and rulesets change only via owner-executed API
    calls proposed first in the open (this file's lane).
 4. Push rulesets stay deferred until the repo is private (GitHub allows
