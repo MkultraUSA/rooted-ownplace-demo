@@ -14,10 +14,9 @@ entry (title/author/timestamp) but not the body.
 
 - Today syndication = everyone: one package, all backends, parity proves
   byte-identity. Paid gating breaks byte-identity by design (different
-  readers see different bytes), so `verify-parity` will need a
-  per-audience mode, not a single fingerprint. (Decided #46: single
-  fingerprint while syndication is uniform; per-audience rule specified
-  below, built only when gated content exists.)
+  readers see different bytes). Decided #46: single fingerprint while
+  syndication is uniform; per-audience rule specified below, built only
+  when gated content exists.
 - `signature.json` is a demo placeholder (demo-placeholder hash reference, not a signature — no HMAC, no Ed25519). Any
   entitlement claim must wait for real signatures — otherwise "paid"
   is unenforceable theater. Do NOT ship gating on placeholder crypto.
@@ -82,19 +81,26 @@ only when audience-restricted (gated) stories exist, since different
 readers then legitimately see different bytes and a single fingerprint
 is expected to fail.
 
-Per-audience comparison rule (specified, not implemented):
+Per-audience comparison rule (specified, not implemented). Audience =
+one entitled reader, keyed by readerId (same key as the M3 entitlements
+sidecar and `--entitle-reader(s)` flags; "per-audience" and "per-reader"
+mean the same thing here):
 (a) public index entries (`timeline.json` ids and order) must match
-across backends — metadata stays uniform; (b) within one audience,
-byte-identity is required across backends holding that audience's copy
-(same reader's wrapped package must hash identically everywhere);
-(c) never compare plaintext across audiences — ciphertext inequality
-across audiences is expected, never a mismatch.
+across backends — metadata stays uniform; (b) for each readerId, fetch
+that reader's wrapped package bytes from every backend, hash with the
+same flat package hash used today, and require identity — a missing
+copy on any backend is a failure, because syndication reaches every
+backend and gating restricts readers, never backends; (c) never compare
+bytes across different readerIds — ciphertext inequality between
+audiences is expected, never a mismatch.
 
-Trigger: building parity v2 is owned by the gating schedule (issue #9).
-Until the first gated story is published, single-fingerprint mode is
-the whole rule. Note the current code already leans this way:
-`compareTimelines` compares ids/order only, so index comparison needs
-no change when per-audience mode arrives.
+Trigger: single-fingerprint mode remains the whole rule until the first
+audience-restricted story is published to at least one backend; the
+author client evaluates this at publish time — unpublished drafts do
+not count. Building parity v2 then becomes scheduled work owned by the
+gating schedule (issue #9). Note the current code leans this way:
+`compareTimelines` compares ids/order only, which is audience-neutral
+in principle — though any future gated-index design may revisit that.
 
 Explicitly NOT authorized by this decision: any change to
 `verify-parity.ts` behavior, new flags or modes, and any per-audience
