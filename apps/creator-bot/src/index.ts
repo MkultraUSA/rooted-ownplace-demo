@@ -1,6 +1,6 @@
 // LEGACY seed publisher (pre-timeline). Writes the single canned sample story
-// to the flat latest-copy paths. WARNING: it wipes per-backend directories
-// first, so it DELETES timeline/ history accumulated by `npm run post`.
+// to the flat latest-copy paths. It overwrites only the seed files in place
+// and PRESERVES timeline/ history accumulated by `npm run post` (see #41).
 // Kept for CI seeding + first-run demo only; prefer `npm run post`.
 // Cloud publisher: writes the SAME story package to all configured backends:
 //   1. demo/stores/nextcloud-sim  (LocalFolderStore)
@@ -11,7 +11,7 @@
 // Credentials: env only, never committed. Skipped backends are reported,
 // never faked — verify-parity checks only backends that published.
 
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
@@ -70,10 +70,11 @@ async function publishTo(label: string, store: ObjectStore): Promise<void> {
 
 const published: string[] = [];
 
-// 1+2. Local sims (always; rm+mkdir keeps them byte-identical).
+// 1+2. Local sims (always; seed files are overwritten in place so timeline/
+// history accumulated by `npm run post` survives — see #41. Both sims get
+// the same bytes, so they stay identical).
 for (const backend of ["nextcloud-sim", "google-drive-sim"]) {
   const dir = resolve(root, backend);
-  await rm(dir, { recursive: true, force: true });
   await mkdir(dir, { recursive: true });
   await publishTo(backend, new LocalFolderStore(dir));
   published.push(backend);
