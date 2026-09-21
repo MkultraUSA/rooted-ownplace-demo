@@ -106,6 +106,33 @@ Explicitly NOT authorized by this decision: any change to
 `verify-parity.ts` behavior, new flags or modes, and any per-audience
 partitioning of store layout (that stays an open question below).
 
+## Decision (M7 #58): media pointer placement
+
+Rule: media pointers live INSIDE the encrypted envelope, never beside
+it. Rationale: the Goal limits non-payers to index metadata
+(title/author/timestamp); media pointers are body-adjacent, so they get
+body-grade protection. This also follows the cryptographic-enforcement
+constraint — pointer visibility is enforced by encryption like
+everything else — and fits the per-audience parity rule (uniform index,
+per-reader ciphertext).
+
+Consequences:
+- Plaintext index carries only Goal-allowed metadata. No media URLs,
+  counts, or sizes in the clear. (Ciphertext size still hints at media
+  size — acknowledged, padding deferred, not solved here.)
+- Media itself stays in the poster's own Drive/Nextcloud folder;
+  entitled readers decrypt, then fetch over TLS. Fetch traffic analysis
+  is explicitly out of scope.
+- No per-audience partitioning for media: pointers resolve to poster
+  folders, so one package suffices. (Wrapped-key partitioning stays open
+  below.)
+- UI split recorded: clients may cache, rearrange, and theme arbitrarily
+  and locally; none of that is protocol and none of it syndicates.
+
+Explicitly NOT authorized by this decision: any media implementation,
+any store layout change, fetch anonymization, padding schemes, or
+shipping anything enforceable (placeholder-crypto constraint stands).
+
 ## Open questions
 
 - [Decided #44] Oracle operator: author-self-hosted (see above).
@@ -113,3 +140,5 @@ partitioning of store layout (that stays an open question below).
 - How do offline readers receive rotations?
 - Does Drive/Nextcloud folder layout need per-audience partitioning,
   or does one package with many wrapped keys suffice?
+  (Media half decided #58: pointers resolve to poster folders, no
+  partitioning for media; wrapped-key half still open.)
