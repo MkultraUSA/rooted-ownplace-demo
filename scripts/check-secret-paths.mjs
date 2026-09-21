@@ -7,8 +7,10 @@ const restrictedPatterns = [
   "**/.env.*",
   ".env.ownplace",
   "**/.env.ownplace",
+  "demo/stores",
   "demo/stores/**",
   "**/demo/stores/**",
+  "secrets",
   "secrets/**",
   "**/secrets/**",
   ".secret",
@@ -31,10 +33,19 @@ const restrictedPatterns = [
   "**/service-account*.json",
 ];
 
-const trackedFiles = execFileSync("git", ["ls-files"], { encoding: "utf8" })
-  .split(/\r?\n/)
-  .filter(Boolean)
-  .map((path) => path.replaceAll("\\", "/"));
+const trackedFiles = process.argv.includes("--self-test")
+  ? [
+      ".ENV",
+      "keys/ADMIN.PEM",
+      "CREDENTIALS.JSON",
+      "Id_rsa",
+      "secrets",
+      "demo/stores",
+    ]
+  : execFileSync("git", ["ls-files"], { encoding: "utf8" })
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((path) => path.replaceAll("\\", "/"));
 
 function escapeRegex(value) {
   return value.replace(/[.+^${}()|[\]\\]/g, "\\$&");
@@ -68,7 +79,7 @@ function globToRegex(pattern) {
     source += escapeRegex(char);
   }
 
-  return new RegExp(`^${source}$`);
+  return new RegExp(`^${source}$`, "i");
 }
 
 const restricted = restrictedPatterns.map((pattern) => ({

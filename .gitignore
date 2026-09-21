@@ -1,6 +1,7 @@
 node_modules/
 dist/
 *.local
+.env*
 
 # Demo store contents are generated (publish/post), never committed.
 demo/stores/*/
