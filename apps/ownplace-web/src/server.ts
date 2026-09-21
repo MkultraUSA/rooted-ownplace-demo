@@ -352,5 +352,9 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(port, "127.0.0.1", () => {
-  console.log(`OwnPlace API + web on http://127.0.0.1:${port}`);
+  // Log the bound port (not the requested one) so PORT=0 ephemeral
+  // binds are discoverable by test harnesses.
+  const bound = server.address();
+  const shown = typeof bound === "object" && bound !== null ? bound.port : port;
+  console.log(`OwnPlace API + web on http://127.0.0.1:${shown}`);
 });
