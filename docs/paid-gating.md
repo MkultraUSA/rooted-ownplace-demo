@@ -14,8 +14,9 @@ entry (title/author/timestamp) but not the body.
 
 - Today syndication = everyone: one package, all backends, parity proves
   byte-identity. Paid gating breaks byte-identity by design (different
-  readers see different bytes), so `verify-parity` will need a
-  per-audience mode, not a single fingerprint.
+  readers see different bytes). Decided #46: single fingerprint while
+  syndication is uniform; per-audience rule specified below, built only
+  when gated content exists.
 - `signature.json` is a demo placeholder (demo-placeholder hash reference, not a signature — no HMAC, no Ed25519). Any
   entitlement claim must wait for real signatures — otherwise "paid"
   is unenforceable theater. Do NOT ship gating on placeholder crypto.
@@ -38,7 +39,8 @@ entry (title/author/timestamp) but not the body.
 5. Reader flow: OwnPlace fetches package, unwraps with local private
    key, decrypts. Failure = "not entitled" UI, never a raw error.
 6. Parity v2: compare index entries + per-reader ciphertext identity,
-   not plaintext fingerprints.
+   not plaintext fingerprints. (Adopted as the per-audience rule, see
+   Decision #46 — specified, not yet implemented.)
 
 ## Explicit non-goals for milestone #1
 
@@ -69,6 +71,40 @@ escrow or custody of funds, third-party oracle operators, key servers,
 backend ACL changes, and — per the placeholder-crypto constraint above —
 shipping anything enforceable. Until real signatures land, attestations
 are demo-grade; this decision does not green-light gating in production.
+
+## Decision (M5 #46): per-audience parity mode
+
+Rule: single fingerprint while every backend serves byte-identical
+packages — that is today's `verify-parity` (flat package hash plus
+timeline id/order comparison), unchanged. Per-audience mode takes over
+only when audience-restricted (gated) stories exist, since different
+readers then legitimately see different bytes and a single fingerprint
+is expected to fail.
+
+Per-audience comparison rule (specified, not implemented). Audience =
+one entitled reader, keyed by readerId (same key as the M3 entitlements
+sidecar and `--entitle-reader(s)` flags; "per-audience" and "per-reader"
+mean the same thing here):
+(a) public index entries (`timeline.json` ids and order) must match
+across backends — metadata stays uniform; (b) for each readerId, fetch
+that reader's wrapped package bytes from every backend, hash with the
+same flat package hash used today, and require identity — a missing
+copy on any backend is a failure, because syndication reaches every
+backend and gating restricts readers, never backends; (c) never compare
+bytes across different readerIds — ciphertext inequality between
+audiences is expected, never a mismatch.
+
+Trigger: single-fingerprint mode remains the whole rule until the first
+audience-restricted story is published to at least one backend; the
+author client evaluates this at publish time — unpublished drafts do
+not count. Building parity v2 then becomes scheduled work owned by the
+gating schedule (issue #9). Note the current code leans this way:
+`compareTimelines` compares ids/order only, which is audience-neutral
+in principle — though any future gated-index design may revisit that.
+
+Explicitly NOT authorized by this decision: any change to
+`verify-parity.ts` behavior, new flags or modes, and any per-audience
+partitioning of store layout (that stays an open question below).
 
 ## Open questions
 
