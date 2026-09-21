@@ -31,12 +31,19 @@ PRs also carry `review-findings-N` labels (filterable, countable).
 | #35 | Paid gating slice 3: signed entitlements sidecar + CLI multi-reader | 1 | APPROVED (Radics) | — | #34 |
 | #38 | M4: entitled-vs-wrapped cross-check | 2 | APPROVED (Radics) | — | #36 |
 | #39 | M4: stale flat-copy entitlements lifecycle | 2 | APPROVED (Radics) | — | #37 |
+| #40 | M4 closeout docs: REVIEW-LOG through #39, AGENT0_STATUS post-#39 | unknown — no label (docs-only) | APPROVED (Radics, docs-only) | — | — |
+| #43 | M5: legacy publish preserves timeline history | 3 | APPROVED (Radics) | — | #41 |
+| #45 | M5: decide entitlement oracle operator | 2 | APPROVED (Radics) | `ca45c1c` | #44 |
+| #47 | M5: decide per-audience parity mode | 4 | REQUEST-CHANGES → APPROVED (Radics) | `36e1daf` | #46 |
+| #48 | Add CI guard for secret paths (owner/Codex branch) | 3 | REQUEST-CHANGES → APPROVED (Radics) | `9349fe5` | #42 |
+| #51 | M6: web API error-contract regression test | 5 | REQUEST-CHANGES → APPROVED (Radics) | `08b346e` | #49 |
 
-Totals: **70 findings caught across 19 PRs with `review-findings-N` labels (17 merged + #2 closed-superseded + #25 closed-superseded), plus 6 unlabelled PRs (#12–17, unknown counts — see rows)**, all addressed or queued.
+Totals: **87 findings caught across 24 PRs with `review-findings-N` labels (22 merged + #2 closed-superseded + #25 closed-superseded), plus 7 unlabelled PRs (#12–17 and #40, unknown counts — see rows)**, all addressed or queued.
 Themes: import side effects, path traversal, raw throws vs collected
 problems, weak cross-backend checks, destructive tests, crash ordering,
 missing error states, unvalidated input; plus session/auth hardening,
-signed-package verification, history authentication, sealed-body envelopes.
+signed-package verification, history authentication, sealed-body envelopes,
+API error contracts, secret-path guarding, decision records.
 
 Convention: Radics pushes `radics/*` (code only, never `.github/workflows/`);
 blind review posts verdict; MkultraUSA merges. Ruleset `review-lane-main`
