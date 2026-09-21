@@ -1,7 +1,8 @@
 # Paid Gating — design note (Substack-style, future work)
 
-Status: DESIGN ONLY. Not in milestone #1. Open syndication stays the rule
-until this is explicitly scheduled. See issue #9.
+Status: DESIGN ONLY. M5 decided the oracle operator (#44); everything else
+below stays undecided. Open syndication stays the rule until gating is
+explicitly scheduled. See issue #9.
 
 ## Goal
 
@@ -31,9 +32,9 @@ entry (title/author/timestamp) but not the body.
 3. Key distribution: data key wrapped per entitled reader public key
    (or a single group key rotated on membership change). Wrapped keys
    live in `manifest.json` or a sidecar `entitlements.json`.
-4. Payment hook: an entitlement oracle (out of band for now) attests
-   "kinfolk-X paid author-Y"; the author client includes X's wrapped
-   key at next publish. Revocation = rotate group key + republish.
+4. Payment hook: the author-self-hosted oracle (decided, see below)
+   attests "kinfolk-X paid author-Y"; the author client includes X's
+   wrapped key at next publish. Revocation = rotate group key + republish.
 5. Reader flow: OwnPlace fetches package, unwraps with local private
    key, decrypts. Failure = "not entitled" UI, never a raw error.
 6. Parity v2: compare index entries + per-reader ciphertext identity,
@@ -46,9 +47,32 @@ entry (title/author/timestamp) but not the body.
 - No encryption of any kind beyond the existing demo placeholder.
 - This file must not be read as promising a timeline.
 
+## Decision (M5 #44): entitlement oracle operator
+
+Operator: author-self-hosted. The author's own Kinfolk client is the
+oracle — no third party, no key server, no fund custody. Payment itself
+stays fully out of band (whatever rails author and reader already use,
+or in person); the oracle only records the attestation. Rationale: the
+stores are dumb and enforcement is cryptographic, so no operator beyond
+the author needs trust or infrastructure.
+
+Attestation artifact (format decided, enforcement deferred): a record of
+{readerId, readerPublicKey, authorId, scope, attestedAt} held by the
+author client. Consumption is already implemented: attested pairs feed
+the existing `--entitle-reader(s)` flow at next publish (M3 sidecar),
+so the path works end to end in demo today (demo-grade only, not enforceable).
+
+Revocation: rotate the data/group key + republish (unchanged).
+
+Explicitly NOT authorized by this decision: payment rail integration,
+escrow or custody of funds, third-party oracle operators, key servers,
+backend ACL changes, and — per the placeholder-crypto constraint above —
+shipping anything enforceable. Until real signatures land, attestations
+are demo-grade; this decision does not green-light gating in production.
+
 ## Open questions
 
-- Who runs the payment/entitlement oracle? (Self-hosted? Third party?)
+- [Decided #44] Oracle operator: author-self-hosted (see above).
 - Group key vs per-reader wrap at scale (100s of paying readers)?
 - How do offline readers receive rotations?
 - Does Drive/Nextcloud folder layout need per-audience partitioning,
