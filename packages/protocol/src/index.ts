@@ -76,3 +76,4 @@ export function verifyManifestSignature(manifest: unknown, signature: unknown, k
   catch { return false; }
 }
 export * from "./gated.js";
+export * from "./mediagated.js";

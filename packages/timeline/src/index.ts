@@ -280,6 +280,10 @@ export async function fetchVerifiedHistoryPackage(store: ObjectStore, id: string
   if (storyDoc && storyDoc.restricted !== undefined) {
     if (!isSealedBody(storyDoc.restricted)) problems.push("gated envelope is malformed");
     else if (storyDoc.body !== "") problems.push("gated package contains plaintext body");
+    else {
+      const media = (storyDoc as { media?: unknown }).media;
+      if (!Array.isArray(media) || media.length !== 0) problems.push("gated package contains plaintext media");
+    }
   }
   // Entitlements binding (slice 3): gated packages must list the sidecar in
   // the manifest exactly once (hash-checked by the generic manifest loop
