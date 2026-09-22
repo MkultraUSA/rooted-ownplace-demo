@@ -58,4 +58,6 @@ test("oversize or malformed media is rejected before sealing", () => {
   assert.throws(() => sealGatedContent("b", [""], readers), /at most 8/);
   assert.throws(() => sealGatedContent("b", ["x".repeat(2049)], readers), /at most 8/);
   assert.throws(() => sealGatedContent("b", [42] as unknown as string[], readers), /at most 8/);
+  assert.throws(() => sealGatedContent("b", ["http://poster.example/m.jpg"], readers), /at most 8/);
+  assert.throws(() => sealGatedContent("b", ["javascript:alert(1)"], readers), /at most 8/);
 });

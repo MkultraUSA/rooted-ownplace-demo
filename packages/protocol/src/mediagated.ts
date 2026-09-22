@@ -31,12 +31,17 @@ export interface OpenedGatedContent {
 }
 
 export function isMediaList(value: unknown): value is string[] {
+  // Media lives in poster Drive/Nextcloud folders fetched over TLS (#58),
+  // so only https pointers seal. Anything else is rejected, never stored.
   return (
     Array.isArray(value) &&
     value.length <= MAX_MEDIA_ITEMS &&
     value.every(
       (u): u is string =>
-        typeof u === "string" && u.length >= 1 && u.length <= MAX_MEDIA_URL_CHARS,
+        typeof u === "string" &&
+        u.length >= 9 &&
+        u.length <= MAX_MEDIA_URL_CHARS &&
+        u.startsWith("https://"),
     )
   );
 }
@@ -44,7 +49,12 @@ export function isMediaList(value: unknown): value is string[] {
 function isGatedContent(value: unknown): value is GatedContent {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const rec = value as Record<string, unknown>;
-  return rec.v === GATED_CONTENT_VERSION && typeof rec.body === "string" && isMediaList(rec.media);
+  return (
+    rec.v === GATED_CONTENT_VERSION &&
+    typeof rec.body === "string" &&
+    rec.body.length >= 1 &&
+    isMediaList(rec.media)
+  );
 }
 
 export function sealGatedContent(body: string, media: string[], readers: SealReader[]): SealedBody {

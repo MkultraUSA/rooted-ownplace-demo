@@ -593,42 +593,58 @@ test("verify path rejects plaintext media on gated packages", async () => {
     const reader = x25519Pair();
     const author = ed25519Pair();
     const root = join(dir, "stores");
-    async function writePkg(id: string, story: unknown): Promise<void> {
+    async function writePkg(id: string, story: unknown, entitled = false): Promise<void> {
       const kinfolk = { id: "kinfolk-x", displayName: "X", publicKey: author.pub };
-      const manifest = createManifest(
-        id,
-        [
-          { path: "kinfolk.json", contentType: "application/json", value: kinfolk },
-          { path: "story.json", contentType: "application/json", value: story },
-        ],
-        "ed25519",
-      );
+      const objects: { path: string; contentType: string; value: unknown }[] = [
+        { path: "kinfolk.json", contentType: "application/json", value: kinfolk },
+        { path: "story.json", contentType: "application/json", value: story },
+      ];
+      if (entitled) {
+        objects.push({
+          path: "entitlements.json", contentType: "application/json",
+          value: { storyId: id, entitled: [{ readerId: "reader-bob" }] },
+        });
+      }
+      const manifest = createManifest(id, objects, "ed25519");
       const signature = signManifest(manifest, author.priv);
       const store = new LocalFolderStore(join(root, "nextcloud-sim"));
       await store.writeObject(`timeline/${id}/kinfolk.json`, objectBytes(kinfolk));
       await store.writeObject(`timeline/${id}/story.json`, objectBytes(story));
       await store.writeObject(`timeline/${id}/manifest.json`, objectBytes(manifest));
       await store.writeObject(`timeline/${id}/signature.json`, objectBytes(signature));
+      if (entitled) {
+        await store.writeObject(
+          `timeline/${id}/entitlements.json`,
+          objectBytes({ storyId: id, entitled: [{ readerId: "reader-bob" }] }),
+        );
+      }
     }
-    const { sealBody } = await import("@rooted/protocol");
+    const { sealBody, sealGatedContent } = await import("@rooted/protocol");
     const env = sealBody("secret", reader.pub, "reader-bob");
     await writePkg("story-medialeak", {
       id: "story-medialeak", title: "t", body: "", media: ["https://poster.example/m.jpg"],
       authorId: "kinfolk-x", createdAt: "2026-09-20T00:00:00.000Z", restricted: env,
     });
+    await writePkg("story-nomedia", {
+      id: "story-nomedia", title: "t", body: "",
+      authorId: "kinfolk-x", createdAt: "2026-09-20T00:00:00.000Z", restricted: env,
+    });
+    await writePkg("story-badmedia", {
+      id: "story-badmedia", title: "t", body: "", media: "https://poster.example/m.jpg",
+      authorId: "kinfolk-x", createdAt: "2026-09-20T00:00:00.000Z", restricted: env,
+    });
+    const venv = sealGatedContent("secret", ["https://poster.example/m.jpg"], [
+      { readerId: "reader-bob", readerPublicKey: reader.pub },
+    ]);
+    await writePkg("story-v1media", {
+      id: "story-v1media", title: "t", body: "", media: [],
+      authorId: "kinfolk-x", createdAt: "2026-09-20T00:00:00.000Z", restricted: venv,
+    }, true);
     const store = new LocalFolderStore(join(root, "nextcloud-sim"));
     await assert.rejects(fetchVerifiedHistoryPackage(store, "story-medialeak"), /plaintext media/);
-    await publishStory(
-      { title: "Paid post", body: "paywalled words", authorId: "kinfolk-alex", authorName: "Alex" },
-      { root },
-      {
-        createdAt: "2026-09-20T00:00:00.000Z",
-        storyId: "story-okmedia",
-        entitle: { readerId: "reader-bob", readerPublicKey: reader.pub },
-      },
-    );
-    const ok = await fetchVerifiedHistoryPackage(store, "story-okmedia");
-    assert.equal(ok.story.id, "story-okmedia");
-    assert.deepEqual(ok.story.media, []);
+    await assert.rejects(fetchVerifiedHistoryPackage(store, "story-nomedia"), /plaintext media/);
+    await assert.rejects(fetchVerifiedHistoryPackage(store, "story-badmedia"), /plaintext media/);
+    const v1 = await fetchVerifiedHistoryPackage(store, "story-v1media");
+    assert.equal(v1.story.id, "story-v1media");
   });
 });
