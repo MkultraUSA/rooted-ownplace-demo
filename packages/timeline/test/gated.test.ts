@@ -587,3 +587,48 @@ test("m4 flat-copy: public then public stays absent", async () => {
     }
   });
 });
+
+test("verify path rejects plaintext media on gated packages", async () => {
+  await withIdDir(async (dir) => {
+    const reader = x25519Pair();
+    const author = ed25519Pair();
+    const root = join(dir, "stores");
+    async function writePkg(id: string, story: unknown): Promise<void> {
+      const kinfolk = { id: "kinfolk-x", displayName: "X", publicKey: author.pub };
+      const manifest = createManifest(
+        id,
+        [
+          { path: "kinfolk.json", contentType: "application/json", value: kinfolk },
+          { path: "story.json", contentType: "application/json", value: story },
+        ],
+        "ed25519",
+      );
+      const signature = signManifest(manifest, author.priv);
+      const store = new LocalFolderStore(join(root, "nextcloud-sim"));
+      await store.writeObject(`timeline/${id}/kinfolk.json`, objectBytes(kinfolk));
+      await store.writeObject(`timeline/${id}/story.json`, objectBytes(story));
+      await store.writeObject(`timeline/${id}/manifest.json`, objectBytes(manifest));
+      await store.writeObject(`timeline/${id}/signature.json`, objectBytes(signature));
+    }
+    const { sealBody } = await import("@rooted/protocol");
+    const env = sealBody("secret", reader.pub, "reader-bob");
+    await writePkg("story-medialeak", {
+      id: "story-medialeak", title: "t", body: "", media: ["https://poster.example/m.jpg"],
+      authorId: "kinfolk-x", createdAt: "2026-09-20T00:00:00.000Z", restricted: env,
+    });
+    const store = new LocalFolderStore(join(root, "nextcloud-sim"));
+    await assert.rejects(fetchVerifiedHistoryPackage(store, "story-medialeak"), /plaintext media/);
+    await publishStory(
+      { title: "Paid post", body: "paywalled words", authorId: "kinfolk-alex", authorName: "Alex" },
+      { root },
+      {
+        createdAt: "2026-09-20T00:00:00.000Z",
+        storyId: "story-okmedia",
+        entitle: { readerId: "reader-bob", readerPublicKey: reader.pub },
+      },
+    );
+    const ok = await fetchVerifiedHistoryPackage(store, "story-okmedia");
+    assert.equal(ok.story.id, "story-okmedia");
+    assert.deepEqual(ok.story.media, []);
+  });
+});
