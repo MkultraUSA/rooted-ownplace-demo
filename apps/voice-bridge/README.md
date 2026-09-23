@@ -19,6 +19,11 @@ Live meeting bridge: Slack Socket Mode listener + push-to-talk voice floor
 (default `http://127.0.0.1:4096`), `SLACK_MIC_SOURCE`,
 `SLACK_STT_MODEL` (default `tiny.en`).
 
+## Mic discipline (default paused)
+The microphone starts PAUSED. Saying `listen` / `mic on` in an allowed
+channel opens the meeting window (`mic off` closes it). This prevents
+24/7 room transcription (CPU + privacy).
+
 ## Safety
 Voice may EXECUTE read-only/status turns and PROPOSE privileged ones per
 `docs/voice-action-bridge.md`. Merges, deploys, closes, credentials: typed
