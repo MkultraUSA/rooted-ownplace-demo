@@ -1,0 +1,5 @@
+voices/
+whisper-models/
+__pycache__/
+*.pyc
+state/
