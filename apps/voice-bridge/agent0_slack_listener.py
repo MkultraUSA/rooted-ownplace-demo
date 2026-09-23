@@ -785,6 +785,10 @@ def main() -> int:
 
     settings = build_settings(args.env)
     load_seen_events()
+    # Mic defaults PAUSED: listening opens only on explicit `listen`/`mic on`
+    # (meeting window), never at startup. Transcribing room audio 24/7 burned
+    # ~47% CPU and no meeting was ever announced by default-listening.
+    VOICE_PAUSED.set()
     if args.check:
         connection = slack_api("apps.connections.open", settings.app_token, post=True)
         print(
