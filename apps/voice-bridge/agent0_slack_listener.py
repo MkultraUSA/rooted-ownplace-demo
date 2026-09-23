@@ -664,11 +664,38 @@ def audit_line(message: str, answer: str) -> str:
     return f'Bridge audit: heard="{heard}" → reasoning → {outcome}: {why}'
 
 
+def verify_action(directory: str | None, answer: str) -> str:
+    """Independent check on an ACTED claim before it is reported as done.
+
+    Non-ACTED outcomes need no verification. For ACTED turns touching files,
+    a clean `git status` in the working directory contradicts the claim, so
+    the turn is reported UNVERIFIED for owner follow-up instead of done.
+    """
+    first = (answer.strip().splitlines() or [""])[0].upper()
+    if not first.startswith("ACTED"):
+        return ""
+    if not directory:
+        return "VERIFY: no project directory mapped; outcome taken on trust."
+    try:
+        r = subprocess.run(
+            ["git", "-C", directory, "status", "--porcelain"],
+            capture_output=True, text=True, timeout=20,
+        )
+        changed = [ln for ln in r.stdout.splitlines() if ln.strip()]
+        if r.returncode == 0 and changed:
+            return f"VERIFY: tree shows {len(changed)} changed file(s); claim consistent."
+        return "VERIFY: tree clean; ACTED claim UNVERIFIED, owner confirm needed."
+    except Exception as exc:
+        return f"VERIFY: check failed ({type(exc).__name__}); outcome taken on trust."
+
+
 def route_agent0_turn(settings: Settings, channel: str, thread_ts: str | None, message: str,
                       action: bool = False) -> None:
     try:
-        answer = agent0_reply(message, action=action)
-        reply = answer + "\n" + audit_line(message, answer)
+        directory = project_directory(channel)
+        answer = agent0_reply(message, action=action, channel=channel)
+        check = verify_action(directory, answer) if action else ""
+        reply = answer + ("\n" + check if check else "") + "\n" + audit_line(message, answer)
         AUDIO_JOBS.put((settings, channel, thread_ts, reply, answer, "agent0", True))
     except Exception as exc:
         LOG.exception("Agent0 reasoning handoff failed")
