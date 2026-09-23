@@ -106,26 +106,53 @@ def claim_event(event_id: str) -> bool:
         return True
 
 
-def opencode_session() -> str:
+def project_directory(channel: str | None) -> str | None:
+    """Working directory for an action turn, by channel.
+
+    AGENT0_PROJECT_DIRS maps "channel-id:/path,...". Unmapped channels get
+    None (server default) instead of the old hardcoded supervisor repo, so
+    BattleBuddy/ops turns no longer reason inside the wrong project.
+    """
+    raw = os.environ.get("AGENT0_PROJECT_DIRS", "")
+    for item in raw.split(","):
+        item = item.strip()
+        if not item or ":" not in item or channel is None:
+            continue
+        chan, _, path = item.partition(":")
+        if chan.strip() == channel and path.strip():
+            return path.strip()
+    return None
+
+
+def opencode_session(directory: str | None = None) -> str:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    if SESSION_FILE.exists():
-        session_id = SESSION_FILE.read_text(encoding="utf-8").strip()
+    # One session per working directory: reusing a supervisor-repo session
+    # for a BattleBuddy turn was the wrong-project bug.
+    session_file = SESSION_FILE
+    if directory:
+        safe = re.sub(r"[^A-Za-z0-9_-]", "_", directory.strip("/"))
+        session_file = STATE_DIR / f"opencode-session-id.{safe}"
+    if session_file.exists():
+        session_id = session_file.read_text(encoding="utf-8").strip()
         if session_id:
             try:
                 json_request("GET", f"{OPENCODE_URL}/session/{session_id}", timeout=10)
                 return session_id
             except Exception:
                 LOG.warning("Stored OpenCode session is unavailable; creating a new one")
+    payload: dict[str, Any] = {"title": "Agent0 live meeting bridge"}
+    if directory:
+        payload["directory"] = directory
     session = json_request(
         "POST", f"{OPENCODE_URL}/session",
-        {"title": "Agent0 live meeting bridge"}, timeout=15,
+        payload, timeout=15,
     )
     session_id = session["id"]
-    SESSION_FILE.write_text(session_id + "\n", encoding="utf-8")
+    session_file.write_text(session_id + "\n", encoding="utf-8")
     return session_id
 
 
-def agent0_reply(message: str, action: bool = False) -> str:
+def agent0_reply(message: str, action: bool = False, channel: str | None = None) -> str:
     # Shared ground truth the reasoning model would otherwise lack
     # (it has no repo or workstation context of its own).
     context = (
@@ -157,7 +184,7 @@ def agent0_reply(message: str, action: bool = False) -> str:
         )
         agent = "summary"
     with OPENCODE_LOCK:
-        session_id = opencode_session()
+        session_id = opencode_session(project_directory(channel))
         result = json_request(
             "POST", f"{OPENCODE_URL}/session/{session_id}/message",
             {
@@ -667,7 +694,7 @@ def audit_line(message: str, answer: str) -> str:
 def route_agent0_turn(settings: Settings, channel: str, thread_ts: str | None, message: str,
                       action: bool = False) -> None:
     try:
-        answer = agent0_reply(message, action=action)
+        answer = agent0_reply(message, action=action, channel=channel)
         reply = answer + "\n" + audit_line(message, answer)
         AUDIO_JOBS.put((settings, channel, thread_ts, reply, answer, "agent0", True))
     except Exception as exc:

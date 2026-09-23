@@ -19,6 +19,12 @@ Live meeting bridge: Slack Socket Mode listener + push-to-talk voice floor
 (default `http://127.0.0.1:4096`), `SLACK_MIC_SOURCE`,
 `SLACK_STT_MODEL` (default `tiny.en`).
 
+## Per-project action directory
+`AGENT0_PROJECT_DIRS` maps `channel-id:/path,...`. Action turns open the
+reasoning session in the mapped directory (one session file per directory);
+unmapped channels use the server default. Previously every turn reasoned
+inside the supervisor repo regardless of topic.
+
 ## Mic discipline (default paused)
 The microphone starts PAUSED. Saying `listen` / `mic on` in an allowed
 channel opens the meeting window (`mic off` closes it). This prevents
