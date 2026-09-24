@@ -342,23 +342,26 @@ export function tryOpenBody(
     // have sealed that exact JSON — accepted, demo-grade per mediagated).
     // A v1-shaped envelope whose media violates the seal contract fails
     // closed: renderers must never trust unbounded/author-crafted URLs.
-    let body = plaintext;
-    let media: string[] = [];
+    // Only JSON.parse throws here (legacy sealed string body); the shape
+    // checks below are pure and fail closed to the legacy path.
+    let parsed: unknown = null;
     try {
-      const parsed: unknown = JSON.parse(plaintext);
-      if (
-        parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) &&
-        (parsed as { v?: unknown }).v === 1 &&
-        typeof (parsed as { body?: unknown }).body === "string" &&
-        "media" in parsed
-      ) {
-        const m = (parsed as { media?: unknown }).media;
-        if (!isMediaList(m)) return { status: "unreadable" };
-        body = ((parsed as unknown) as { body: string }).body;
-        media = m;
-      }
+      parsed = JSON.parse(plaintext);
     } catch {
       // Not JSON: legacy sealed string body.
+    }
+    let body = plaintext;
+    let media: string[] = [];
+    if (
+      parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) &&
+      (parsed as { v?: unknown }).v === 1 &&
+      typeof (parsed as { body?: unknown }).body === "string" &&
+      Object.hasOwn(parsed, "media")
+    ) {
+      const m = (parsed as { media?: unknown }).media;
+      if (!isMediaList(m)) return { status: "unreadable" };
+      body = ((parsed as unknown) as { body: string }).body;
+      media = m;
     }
     return { status: "opened", body, media };
   } catch (e) {
