@@ -35,6 +35,9 @@ export interface TimelineEntry {
   authorId: string;
   createdAt: string;
   verified?: boolean;
+  // Follow-model broadcast (M10 demo): which porch an entry was pulled
+  // from. Own-porch reads leave it unset; merged reads set it.
+  origin?: string;
 }
 export interface TimelineIndex {
   protocol: "rooted/v0.1";
@@ -420,6 +423,61 @@ export async function readAuthenticatedTimeline(
   return { index: { protocol: "rooted/v0.1", kind: "timeline", updatedAt: now, stories: entries, skipped: publicSkipped }, skipped };
 }
 
+export interface FollowedPorch {
+  label: string;
+  store: ObjectStore;
+}
+
+// Follow-model broadcast (M10 demo): pull one timeline across your porch
+// plus every followed porch. Each porch is verified independently through
+// the existing fail-closed path, so a tampered followed porch loses its
+// own entries but never breaks the rest. Entries carry their origin porch;
+// same id on two porches keeps the first porch listed. Sealed posts stay
+// sealed — opening is still the #66 reader path per entry.
+export function isPorchLabel(label: unknown): label is string {
+  // Labels land in display entries and diagnostics, so they are gated at
+  // the merge boundary: short, no slashes, no whitespace, no markup.
+  return (
+    typeof label === "string" &&
+    label.length >= 1 &&
+    label.length <= 32 &&
+    /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(label)
+  );
+}
+
+export async function readFollowedTimelines(
+  porches: FollowedPorch[], now: string,
+): Promise<{ stories: TimelineEntry[]; skipped: { porch: string; id: string; reason: string }[] }> {
+  const seen = new Set<string>();
+  const stories: TimelineEntry[] = [];
+  const skipped: { porch: string; id: string; reason: string }[] = [];
+  // Trust order = list order: the caller's own porch belongs first, and a
+  // same-id entry on a later porch never shadows it. Porch ids are
+  // author-chosen (not content-bound), so cross-porch id squats resolve
+  // deterministically to the first-listed porch — callers must list their
+  // own porch first and treat later duplicates as untrusted.
+  for (const porch of porches) {
+    if (!isPorchLabel(porch.label)) throw new Error("bad porch label");
+    let read;
+    try {
+      read = await readAuthenticatedTimeline(porch.store, porch.label, now);
+    } catch {
+      // One broken porch (store fault, unexpected throw) loses its own
+      // entries but never the whole merged read.
+      skipped.push({ porch: porch.label, id: "*", reason: "porch unreadable" });
+      continue;
+    }
+    for (const entry of read.index.stories) {
+      if (seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      stories.push({ ...entry, origin: porch.label });
+    }
+    for (const s of read.skipped) skipped.push({ porch: porch.label, id: s.id, reason: s.reason });
+  }
+  sortTimeline(stories);
+  return { stories, skipped };
+}
+
 export async function readIndex(store: ObjectStore, label: string, now: string): Promise<TimelineIndex> {
   // Authenticated: derive display metadata from verified history packages
   // rather than trusting unsigned timeline.json values.
@@ -548,7 +606,7 @@ export function backendsFromEnv(repoRoot: string): BackendSet {
 
 /** Syndicate one validated story to every configured backend. */
 export async function publishStory(
-  validated: { title: string; body: string; authorId: string; authorName: string },
+  validated: { title: string; body: string; media?: string[]; authorId: string; authorName: string },
   backends: BackendSet,
   opts: { createdAt?: string; storyId?: string; entitle?: EntitleReader; entitleReaders?: EntitleReader[] } = {}
 ): Promise<PublishResult> {
