@@ -237,6 +237,101 @@ function Contacts() {
   );
 }
 
+
+function isHttpsUrl(u: unknown): u is string {
+  return typeof u === "string" && u.startsWith("https://");
+}
+
+function MediaView({ media }: { media: string[] }) {
+  // Belt and braces: server only returns contract-checked media, but the
+  // renderer independently refuses non-https pointers before fetching.
+  const safe = media.filter(isHttpsUrl);
+  if (safe.length === 0) return null;
+  return (
+    <div className="media">
+      {safe.map((u) => {
+        const lower = u.split("?")[0].toLowerCase();
+        const isImage = /\.(jpg|jpeg|png|gif|webp|avif)$/.test(lower);
+        const isVideo = /\.(mp4|webm|mov)$/.test(lower);
+        return (
+          <div key={u} className="media-item">
+            {isImage ? (
+              <img src={u} loading="lazy" alt="Sealed story media" />
+            ) : isVideo ? (
+              <video src={u} controls preload="metadata" />
+            ) : (
+              <a href={u} target="_blank" rel="noreferrer">{u}</a>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function Unlocker({ backend, id }: { backend: string; id: string }) {
+  const [key, setKey] = useState("");
+  const [readerId, setReaderId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [state, setState] = useState<
+    | null
+    | { ok: true; body: string; media: string[] }
+    | { ok: false }
+  >(null);
+  async function open(e: React.FormEvent) {
+    e.preventDefault();
+    if (busy || !key.trim()) return;
+    setBusy(true);
+    setState(null);
+    try {
+      const res = await fetch("/api/open", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ backend, id, readerKey: key, readerId: readerId.trim() || undefined }),
+      });
+      const parsed = (await safeJson(res)) as { status?: unknown; body?: unknown; media?: unknown } | null;
+      if (res.ok && parsed?.status === "opened" && typeof parsed.body === "string" && Array.isArray(parsed.media)) {
+        setState({ ok: true, body: parsed.body, media: (parsed.media as unknown[]).filter(isHttpsUrl) });
+      } else {
+        setState({ ok: false });
+      }
+    } catch {
+      setState({ ok: false });
+    } finally {
+      setBusy(false);
+    }
+  }
+  if (state?.ok) {
+    return (
+      <div>
+        <p>{state.body}</p>
+        <MediaView media={state.media} />
+      </div>
+    );
+  }
+  return (
+    <div>
+      <p>Restricted to entitled Kinfolk: title and metadata are public, the body is sealed.</p>
+      <form onSubmit={open}>
+        <input
+          value={readerId}
+          onChange={(e) => setReaderId(e.target.value)}
+          placeholder="reader id (optional)"
+          aria-label="Reader id"
+        />
+        <textarea
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          placeholder="Paste reader private key to unlock"
+          aria-label="Reader private key"
+        />
+        <button type="submit" disabled={busy || !key.trim()}>Unlock</button>
+      </form>
+      {state && !state.ok && <p className="date">Cannot open with this key.</p>}
+    </div>
+  );
+}
+
 function BackendColumn({ backend, refresh }: { backend: string; refresh: number }) {
   const state = useBackend(backend, refresh);
   return (
@@ -268,7 +363,7 @@ function BackendColumn({ backend, refresh }: { backend: string; refresh: number 
               <div key={e.id} className="story">
                 <p className="date">{formatDate(e.createdAt)} · verified signature</p>
                 <h3>{e.title}</h3>
-                {s ? (s.restricted !== undefined ? <p>Restricted to entitled Kinfolk: title and metadata are public, the body is sealed.</p> : <p>{s.body}</p>) : <p>Story unavailable or failed verification for this entry.</p>}
+                {s ? (s.restricted !== undefined ? <Unlocker backend={backend} id={e.id} /> : <p>{s.body}</p>) : <p>Story unavailable or failed verification for this entry.</p>}
                 <footer>
                   <code>{e.id}</code>
                 </footer>

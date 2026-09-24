@@ -18,6 +18,8 @@ import {
   type Story,
 } from "@rooted/protocol";
 import { isMediaList, isSafeReaderId, isSealedBody, sealBodyForReaders, sealGatedContent, tryOpenBody } from "@rooted/protocol";
+// Re-exported for the web reader gate (M8 #66): same reader-id rule server-side.
+export { isSafeReaderId } from "@rooted/protocol";
 import { LocalFolderStore, WebDavStore, type ObjectStore } from "@rooted/storage";
 import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
