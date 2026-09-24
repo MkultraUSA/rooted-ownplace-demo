@@ -107,3 +107,56 @@ test("follow broadcast: porch post plus creator video reach both kinfolk", async
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("follow merge: bad labels rejected, empty merge empty, id squats keep first porch", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rooted-follow-edge-"));
+  const savedIds = process.env.OWNPLACE_IDENTITY_DIR;
+  process.env.OWNPLACE_IDENTITY_DIR = join(dir, "ids");
+  try {
+    const rootA = join(dir, "porch-a");
+    const rootB = join(dir, "porch-b");
+    const storeA = new LocalFolderStore(join(rootA, "nextcloud-sim"));
+    const storeB = new LocalFolderStore(join(rootB, "nextcloud-sim"));
+    const now = "2026-09-24T00:03:00.000Z";
+    assert.deepEqual(await readFollowedTimelines([], now), { stories: [], skipped: [] });
+    await assert.rejects(
+      readFollowedTimelines([{ label: "../evil", store: storeA }], now),
+      /bad porch label/,
+    );
+    await assert.rejects(
+      readFollowedTimelines([{ label: "<img src=x>", store: storeA }], now),
+      /bad porch label/,
+    );
+    // Same id on two porches: first-listed porch wins, deterministically.
+    for (const [root, title] of [[rootA, "A version"], [rootB, "B version"]] as const) {
+      await publishStory(
+        { title, body: "dup", authorId: "kinfolk-x", authorName: "X" },
+        { root },
+        { createdAt: "2026-09-24T00:00:00.000Z", storyId: "story-dup-1" },
+      );
+    }
+    const aFirst = await readFollowedTimelines(
+      [
+        { label: "porch-a", store: storeA },
+        { label: "porch-b", store: storeB },
+      ],
+      now,
+    );
+    assert.equal(aFirst.stories.length, 1);
+    assert.equal(aFirst.stories[0].title, "A version");
+    assert.equal(aFirst.stories[0].origin, "porch-a");
+    const bFirst = await readFollowedTimelines(
+      [
+        { label: "porch-b", store: storeB },
+        { label: "porch-a", store: storeA },
+      ],
+      now,
+    );
+    assert.equal(bFirst.stories[0].title, "B version");
+    assert.equal(bFirst.stories[0].origin, "porch-b");
+  } finally {
+    if (savedIds === undefined) delete process.env.OWNPLACE_IDENTITY_DIR;
+    else process.env.OWNPLACE_IDENTITY_DIR = savedIds;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
