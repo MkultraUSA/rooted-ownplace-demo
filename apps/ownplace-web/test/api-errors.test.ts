@@ -259,7 +259,7 @@ test("web API sealed open serves media to the entitled key only (#66)", async ()
       403, { error: "cannot open" },
     );
     assertError(await client.request("POST", "/api/open", JSON.stringify({ id: storyId })), 400, {
-      error: "reader key required",
+      error: "bad reader key",
     });
     assertError(await client.request("POST", "/api/open", JSON.stringify({ id: "../evil", readerKey: priv })), 400, {
       error: "bad id",
@@ -274,7 +274,7 @@ test("web API sealed open serves media to the entitled key only (#66)", async ()
     assert.equal(posted.status, 201);
     const pubId = ((posted.json ?? {}) as { storyId?: unknown }).storyId;
     assert.equal(typeof pubId, "string");
-    const pubOpen = await client.request("POST", "/api/open", JSON.stringify({ id: pubId, readerKey: priv }));
+    const pubOpen = await client.request("POST", "/api/open", JSON.stringify({ id: pubId }));
     assert.deepStrictEqual(pubOpen.json, { status: "public", body: "open words", media: [] });
   } finally {
     client.close();

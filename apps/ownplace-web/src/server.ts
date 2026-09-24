@@ -234,17 +234,9 @@ const server = http.createServer(async (req, res) => {
         send(res, 400, { error: "bad id" });
         return;
       }
-      const readerKey = typeof rec.readerKey === "string" ? rec.readerKey : "";
-      if (!readerKey || readerKey.length > 8192) {
-        send(res, 400, { error: "reader key required" });
-        return;
-      }
-      const rawReaderId = rec.readerId;
-      const readerId = rawReaderId === undefined ? undefined : typeof rawReaderId === "string" ? rawReaderId : null;
-      if (readerId === null || (readerId !== undefined && !isSafeReaderId(readerId))) {
-        send(res, 400, { error: "bad reader id" });
-        return;
-      }
+      // Public stories open keyless (reads are public by design): load and
+      // branch before demanding a key, so unrestricted packages keep their
+      // old shape. Falsy check covers cross-version missing/null markers.
       let story;
       try {
         story = await readVerifiedHistoryStory(simStore(backend), id);
@@ -252,8 +244,19 @@ const server = http.createServer(async (req, res) => {
         send(res, 404, { error: "not found" });
         return;
       }
-      if (story.restricted === undefined) {
+      if (!story.restricted) {
         send(res, 200, { status: "public", body: story.body, media: [] });
+        return;
+      }
+      const readerKey = typeof rec.readerKey === "string" ? rec.readerKey : "";
+      if (!readerKey || readerKey.length > 8192) {
+        send(res, 400, { error: "bad reader key" });
+        return;
+      }
+      const rawReaderId = rec.readerId;
+      const readerId = rawReaderId === undefined ? undefined : typeof rawReaderId === "string" ? rawReaderId : null;
+      if (readerId === null || (readerId !== undefined && !isSafeReaderId(readerId))) {
+        send(res, 400, { error: "bad reader id" });
         return;
       }
       const opened = tryOpenStory(story, readerKey, readerId);
