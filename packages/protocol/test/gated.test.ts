@@ -172,3 +172,13 @@ test("tampered second entry does not break the first", () => {
   assert.throws(() => unsealBody(tampered, b.priv, "reader-b"), /not entitled/);
   assert.deepEqual(tryOpenBody({ body: "", restricted: tampered }, a.priv, "reader-a").status, "opened");
 });
+
+test("v1 envelope with off-contract media fails closed on open", () => {
+  const reader = x25519Pair();
+  const bad = sealBody(
+    JSON.stringify({ v: 1, body: "author-crafted", media: ["http://evil.example/x"] }),
+    reader.pub,
+    "reader-bob",
+  );
+  assert.deepEqual(tryOpenBody({ body: "", restricted: bad }, reader.priv, "reader-bob").status, "unreadable");
+});

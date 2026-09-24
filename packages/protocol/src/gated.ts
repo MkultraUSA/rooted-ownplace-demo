@@ -68,6 +68,27 @@ export type OpenResult =
   | { status: "not-entitled" }
   | { status: "unreadable" };
 
+export const MAX_MEDIA_ITEMS = 8;
+export const MAX_MEDIA_URL_CHARS = 2048;
+
+// Media lives in poster Drive/Nextcloud folders fetched over TLS (#58),
+// so only https pointers seal. Anything else is rejected, never stored.
+// Canonical home (mediagated.ts re-exports these); kept here so the open
+// path can enforce the same contract without a gated<->mediagated cycle.
+export function isMediaList(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_MEDIA_ITEMS &&
+    value.every(
+      (u): u is string =>
+        typeof u === "string" &&
+        u.length >= 9 &&
+        u.length <= MAX_MEDIA_URL_CHARS &&
+        u.startsWith("https://"),
+    )
+  );
+}
+
 export function isSafeReaderId(id: unknown): id is string {
   return (
     typeof id === "string" &&
@@ -315,6 +336,12 @@ export function tryOpenBody(
     // body (canonical shape in mediagated.ts; parsed inline here to avoid a
     // gated<->mediagated import cycle). Legacy bare-string envelopes open
     // with empty media so pre-media packages keep working.
+    // Envelope sniffing matches merged #64 openGatedContent: only
+    // sealGatedContent writes v1 envelopes, so a legacy bare string opens
+    // as-is unless it carries the exact v1 shape (requires an author to
+    // have sealed that exact JSON — accepted, demo-grade per mediagated).
+    // A v1-shaped envelope whose media violates the seal contract fails
+    // closed: renderers must never trust unbounded/author-crafted URLs.
     let body = plaintext;
     let media: string[] = [];
     try {
@@ -323,11 +350,12 @@ export function tryOpenBody(
         parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) &&
         (parsed as { v?: unknown }).v === 1 &&
         typeof (parsed as { body?: unknown }).body === "string" &&
-        Array.isArray((parsed as { media?: unknown }).media) &&
-        ((parsed as { media: unknown[] }).media as unknown[]).every((u) => typeof u === "string")
+        "media" in parsed
       ) {
-        body = (parsed as { body: string }).body;
-        media = (parsed as { media: string[] }).media;
+        const m = (parsed as { media?: unknown }).media;
+        if (!isMediaList(m)) return { status: "unreadable" };
+        body = ((parsed as unknown) as { body: string }).body;
+        media = m;
       }
     } catch {
       // Not JSON: legacy sealed string body.

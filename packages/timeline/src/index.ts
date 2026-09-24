@@ -95,7 +95,7 @@ export function validateInput(input: StoryInput): { title: string; body: string;
   // M8 #65: publisher-supplied media pointers. Same readers as the body when
   // gated (no per-audience partitioning per #58); public flow leaves clear
   // media empty as before.
-  const media = input.media ?? [];
+  const media = input.media === undefined ? [] : input.media;
   if (!isMediaList(media)) throw new Error("media must be a list of at most 8 https URLs");
   return { title: cleanTitle, body: cleanBody, media, authorId, authorName };
 }

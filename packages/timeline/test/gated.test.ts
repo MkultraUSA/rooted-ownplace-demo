@@ -716,6 +716,10 @@ test("M8 #65 publisher rejects bad media; public flow unchanged", async () => {
     /media/,
   );
   assert.deepEqual(validateInput({ title: "T", body: "B" }).media, []);
+  assert.throws(
+    () => validateInput({ title: "T", body: "B", media: null as unknown as string[] }),
+    /media/,
+  );
   // Public (unentitled) packages keep the old shape: clear body, empty media.
   await withIdDir(async () => {
     const pkg = buildPackage(
