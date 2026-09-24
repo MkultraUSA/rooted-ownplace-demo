@@ -16,6 +16,7 @@ import {
   readVerifiedHistoryStory,
   removeContact,
   toPublicSkipReason,
+  isPorchAddress,
   validateContact,
   validateInput,
 } from "../src/index.js";
@@ -70,13 +71,26 @@ test("contacts add/list/remove round-trip", async () => {
   try {
     const store = new LocalFolderStore(tmp);
     assert.deepEqual((await readContacts(store)).contacts, []);
-    const c = validateContact({ id: "kinfolk-jo", displayName: "Jo" });
+    const c = validateContact({ id: "kinfolk-jo", displayName: "Jo", address: "local:nextcloud-sim" });
     await addContact(store, c);
-    await addContact(store, c); // idempotent
-    assert.equal((await readContacts(store)).contacts.length, 1);
+    await addContact(store, { ...c, address: "https://porch.example/jo" });
+    const listed = (await readContacts(store)).contacts;
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].address, "https://porch.example/jo");
     await removeContact(store, "kinfolk-jo");
     assert.deepEqual((await readContacts(store)).contacts, []);
-    assert.throws(() => validateContact({ id: "../x", displayName: "Evil" }), /unsafe/);
+    assert.throws(() => validateContact({ id: "../x", displayName: "Evil", address: "local:nextcloud-sim" }), /unsafe/);
+    assert.throws(() => validateContact({ id: "kinfolk-jo", displayName: "Jo", address: "local:../secret" }), /address/);
+    assert.throws(() => validateContact({ id: "kinfolk-jo", displayName: "Jo", address: "http://porch.example/jo" }), /address/);
+    assert.equal(isPorchAddress("https://porch.example/jo"), true);
+    await store.writeObject("contacts.json", new TextEncoder().encode(JSON.stringify({
+      protocol: "rooted/v0.1", kind: "contacts", updatedAt: "2026-09-20T00:00:00.000Z",
+      contacts: [{ id: "legacy", displayName: "Legacy", addedAt: "2026-09-20T00:00:00.000Z" }],
+    }) + "\n"));
+    const legacy = (await readContacts(store)).contacts;
+    assert.equal(legacy.length, 1);
+    assert.equal(legacy[0].id, "legacy");
+    assert.equal(legacy[0].address, undefined);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

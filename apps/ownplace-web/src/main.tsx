@@ -5,7 +5,7 @@ import "./style.css";
 type TimelineEntry = { id: string; title: string; authorId: string; createdAt: string; verified?: boolean };
 type Timeline = { stories: TimelineEntry[] };
 type Story = { id: string; title: string; body: string; createdAt: string; authorId: string; restricted?: unknown };
-type Contact = { id: string; displayName: string; addedAt: string };
+type Contact = { id: string; displayName: string; addedAt: string; address?: string };
 type ContactList = { contacts: Contact[] };
 
 const BACKENDS = ["nextcloud-sim", "google-drive-sim"];
@@ -173,6 +173,7 @@ function Contacts() {
   const [list, setList] = useState<Contact[]>([]);
   const [id, setId] = useState("");
   const [name, setName] = useState("");
+  const [address, setAddress] = useState("");
   const [status, setStatus] = useState("");
   async function refresh() {
     try {
@@ -192,7 +193,7 @@ function Contacts() {
     const res = await fetch("/api/contacts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, displayName: name }),
+      body: JSON.stringify({ id, displayName: name, address }),
     });
     const parsed = (await safeJson(res)) as { error?: string } | null;
     if (!res.ok) {
@@ -200,6 +201,7 @@ function Contacts() {
     } else {
       setId("");
       setName("");
+      setAddress("");
       refresh();
     }
   }
@@ -222,6 +224,7 @@ function Contacts() {
         {list.map((c) => (
           <li key={c.id}>
             {c.displayName} <code>{c.id}</code>{" "}
+            {c.address && <code>{c.address}</code>}{" "}
             <button onClick={() => remove(c.id)}>Unfollow</button>
           </li>
         ))}
@@ -230,7 +233,8 @@ function Contacts() {
       <form onSubmit={add}>
         <input value={id} onChange={(e) => setId(e.target.value)} placeholder="kinfolk id" aria-label="Contact id" />
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Display name" aria-label="Display name" />
-        <button type="submit" disabled={!id.trim() || !name.trim()}>Follow</button>
+        <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="local:nextcloud-sim or https://porch" aria-label="Porch address" />
+        <button type="submit" disabled={!id.trim() || !name.trim() || !address.trim()}>Follow</button>
       </form>
       {status && <p className="date">{status}</p>}
     </section>
