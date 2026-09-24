@@ -8,7 +8,7 @@
 //   POST /api/open  {backend?, id, readerKey, readerId?}  open sealed body+media
 //   GET  /api/contacts                              contact list
 //   POST /api/post        {title, body, authorId?, authorName?}
-//   POST /api/contacts    {id, displayName}  |  DELETE /api/contacts?id=ID
+//   POST /api/contacts    {id, displayName, address}  |  DELETE /api/contacts?id=ID
 //
 // Write auth: single-operator demo token via OWNPLACE_WRITE_TOKEN env.
 // Login mints an HttpOnly session cookie (Secure on HTTPS: forced via
@@ -379,7 +379,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       try {
-        const contact = validateContact((input ?? {}) as { id?: unknown; displayName?: unknown });
+        const contact = validateContact((input ?? {}) as { id?: unknown; displayName?: unknown; address?: unknown });
         send(res, 201, await addContact(store, contact));
       } catch (e) {
         send(res, 400, { error: (e as Error).message });

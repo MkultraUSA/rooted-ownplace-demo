@@ -51,6 +51,9 @@ export interface Contact {
   id: string;
   displayName: string;
   addedAt: string;
+  // M10 #75: where the followed porch lives. Optional on read so contacts
+  // written before this field still load. Required on new adds.
+  address?: string;
 }
 export interface ContactList {
   protocol: "rooted/v0.1";
@@ -653,7 +656,25 @@ export async function publishStory(
 
 // --- Contacts (syndication address book) ---
 
-export function validateContact(input: { id?: unknown; displayName?: unknown }): Contact {
+const PORCH_ADDRESS_MAX = 200;
+
+export function isPorchAddress(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const address = value.trim();
+  if (address.length < 8 || address.length > PORCH_ADDRESS_MAX) return false;
+  if (address.includes("\\") || address.includes("\0") || address.includes("..")) return false;
+  if (address.startsWith("https://")) {
+    if (address.includes("@") || address.includes(" ")) return false;
+    return /^https:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?(?:\/[A-Za-z0-9._~:/?#\[\]!$&'()*+,;=%-]*)?$/.test(address);
+  }
+  if (address.startsWith("local:")) {
+    const rest = address.slice("local:".length);
+    return /^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/.test(rest);
+  }
+  return false;
+}
+
+export function validateContact(input: { id?: unknown; displayName?: unknown; address?: unknown }): Contact {
   if (typeof input?.id !== "string" || !input.id.trim()) throw new Error("contact id is required");
   if (typeof input?.displayName !== "string" || !input.displayName.trim()) {
     throw new Error("contact displayName is required");
@@ -663,7 +684,14 @@ export function validateContact(input: { id?: unknown; displayName?: unknown }):
     throw new Error("contact id contains unsafe characters");
   }
   if (input.displayName.trim().length > 120) throw new Error("contact displayName too long");
-  return { id, displayName: input.displayName.trim(), addedAt: new Date().toISOString() };
+  const address = typeof input.address === "string" ? input.address.trim() : "";
+  if (!isPorchAddress(address)) throw new Error("contact address must be https or local: without traversal");
+  return {
+    id,
+    displayName: input.displayName.trim(),
+    addedAt: new Date().toISOString(),
+    address,
+  };
 }
 
 export async function readContacts(store: ObjectStore): Promise<ContactList> {
@@ -671,10 +699,16 @@ export async function readContacts(store: ObjectStore): Promise<ContactList> {
     const raw = new TextDecoder().decode(await store.readObject("contacts.json"));
     const parsed = JSON.parse(raw) as Partial<ContactList>;
     if (parsed && Array.isArray(parsed.contacts)) {
-      const contacts = parsed.contacts.filter(
-        (c): c is Contact =>
-          typeof c?.id === "string" && typeof c?.displayName === "string"
-      );
+      const contacts = parsed.contacts.flatMap((c): Contact[] => {
+        if (!c || typeof c.id !== "string" || typeof c.displayName !== "string") return [];
+        const contact: Contact = {
+          id: c.id,
+          displayName: c.displayName,
+          addedAt: typeof c.addedAt === "string" ? c.addedAt : new Date().toISOString(),
+        };
+        if (isPorchAddress(c.address)) contact.address = c.address.trim();
+        return [contact];
+      });
       return {
         protocol: "rooted/v0.1",
         kind: "contacts",
@@ -690,7 +724,13 @@ export async function readContacts(store: ObjectStore): Promise<ContactList> {
 
 export async function addContact(store: ObjectStore, contact: Contact): Promise<ContactList> {
   const list = await readContacts(store);
-  if (!list.contacts.some((c) => c.id === contact.id)) list.contacts.push(contact);
+  const existing = list.contacts.find((c) => c.id === contact.id);
+  if (existing) {
+    existing.displayName = contact.displayName;
+    if (contact.address) existing.address = contact.address;
+  } else {
+    list.contacts.push(contact);
+  }
   list.contacts.sort((a, b) => a.displayName.localeCompare(b.displayName));
   list.updatedAt = new Date().toISOString();
   await store.writeObject("contacts.json", new TextEncoder().encode(`${JSON.stringify(list)}\n`));
