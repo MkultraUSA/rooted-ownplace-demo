@@ -18,7 +18,8 @@
     "test": "tsx --test packages/*/test/*.test.ts apps/*/test/*.test.ts",
     "verify": "npm --workspace apps/client-sims run verify",
     "parity": "npm --workspace apps/client-sims run parity",
-    "post": "tsx apps/creator-bot/src/post.ts"
+    "post": "tsx apps/creator-bot/src/post.ts",
+    "subscribe": "tsx apps/creator-bot/src/subscribe.ts"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
