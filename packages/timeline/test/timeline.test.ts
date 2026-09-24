@@ -80,6 +80,7 @@ test("contacts add/list/remove round-trip", async () => {
     await removeContact(store, "kinfolk-jo");
     assert.deepEqual((await readContacts(store)).contacts, []);
     assert.throws(() => validateContact({ id: "../x", displayName: "Evil", address: "local:nextcloud-sim" }), /unsafe/);
+    assert.throws(() => validateContact({ id: "bad id", displayName: "Jo", address: "local:nextcloud-sim" }), /unsafe/);
     assert.throws(() => validateContact({ id: "kinfolk-jo", displayName: "Jo", address: "local:../secret" }), /address/);
     assert.throws(() => validateContact({ id: "kinfolk-jo", displayName: "Jo", address: "http://porch.example/jo" }), /address/);
     assert.equal(isPorchAddress("https://porch.example/jo"), true);

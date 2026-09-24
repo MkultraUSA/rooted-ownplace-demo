@@ -1,15 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LocalFolderStore } from "@rooted/storage";
 import {
+  addContact,
   publishStory,
+  readContactFollowedTimeline,
   readFollowedTimelines,
+  readVerifiedFollowedStory,
   readVerifiedHistoryStory,
   tryOpenStory,
+  validateContact,
 } from "../src/index.js";
 
 function x25519Pair() {
@@ -154,6 +158,113 @@ test("follow merge: bad labels rejected, empty merge empty, id squats keep first
     );
     assert.equal(bFirst.stories[0].title, "B version");
     assert.equal(bFirst.stories[0].origin, "porch-b");
+  } finally {
+    if (savedIds === undefined) delete process.env.OWNPLACE_IDENTITY_DIR;
+    else process.env.OWNPLACE_IDENTITY_DIR = savedIds;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("contact follow: own plus two local porches merge; tamper and escape stay isolated", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rooted-contact-follow-"));
+  const savedIds = process.env.OWNPLACE_IDENTITY_DIR;
+  process.env.OWNPLACE_IDENTITY_DIR = join(dir, "ids");
+  try {
+    const own = new LocalFolderStore(join(dir, "nextcloud-sim"));
+    await publishStory(
+      { title: "Own", body: "mine", authorId: "kinfolk-me", authorName: "Me" },
+      { root: dir },
+      { createdAt: "2026-09-24T00:00:00.000Z", storyId: "story-own-1" },
+    );
+    await publishStory(
+      { title: "Alex", body: "from alex", authorId: "kinfolk-alex", authorName: "Alex" },
+      { root: join(dir, "porch-alex") },
+      { createdAt: "2026-09-24T00:02:00.000Z", storyId: "story-alex-1" },
+    );
+    await publishStory(
+      { title: "Sam", body: "from sam", authorId: "kinfolk-sam", authorName: "Sam" },
+      { root: join(dir, "porch-sam") },
+      { createdAt: "2026-09-24T00:01:00.000Z", storyId: "story-sam-1" },
+    );
+    await addContact(own, validateContact({
+      id: "porch-alex", displayName: "Alex", address: "local:porch-alex/nextcloud-sim",
+    }));
+    await addContact(own, validateContact({
+      id: "porch-sam", displayName: "Sam", address: "local:porch-sam/nextcloud-sim",
+    }));
+    await addContact(own, validateContact({
+      id: "remote-jo", displayName: "Jo", address: "https://porch.example/jo",
+    }));
+
+    const now = "2026-09-24T00:03:00.000Z";
+    const merged = await readContactFollowedTimeline(dir, "nextcloud-sim", now);
+    assert.deepEqual(merged.stories.map((s) => s.id), ["story-alex-1", "story-sam-1", "story-own-1"]);
+    assert.equal(merged.stories.find((s) => s.id === "story-own-1")?.origin, "nextcloud-sim");
+    assert.equal(merged.stories.find((s) => s.id === "story-alex-1")?.origin, "porch-alex");
+    assert.equal(merged.stories.find((s) => s.id === "story-sam-1")?.origin, "porch-sam");
+    assert.ok(merged.skipped.some((s) => s.porch === "remote-jo" && s.reason === "remote porch not fetched"));
+    const opened = await readVerifiedFollowedStory(dir, "nextcloud-sim", "story-alex-1");
+    assert.equal(opened.body, "from alex");
+
+    // Tampered followed package loses only itself.
+    await writeFile(join(dir, "porch-sam/nextcloud-sim/timeline/story-sam-1/story.json"), "{not json");
+    const again = await readContactFollowedTimeline(dir, "nextcloud-sim", now);
+    assert.deepEqual(again.stories.map((s) => s.id), ["story-alex-1", "story-own-1"]);
+    assert.ok(again.skipped.some((s) => s.porch === "porch-sam" && s.id === "story-sam-1"));
+    assert.ok(!JSON.stringify(again).includes(dir), "skip reason leaked a path");
+
+    // Symlink out of the stores root is not a porch.
+    const outside = await mkdtemp(join(tmpdir(), "rooted-outside-"));
+    await publishStory(
+      { title: "Outside", body: "nope", authorId: "kinfolk-out", authorName: "Out" },
+      { root: outside },
+      { createdAt: "2026-09-24T00:04:00.000Z", storyId: "story-outside-1" },
+    );
+    await symlink(join(outside, "nextcloud-sim"), join(dir, "escape"));
+    await addContact(own, validateContact({
+      id: "escape-porch", displayName: "Escape", address: "local:escape",
+    }));
+    const escaped = await readContactFollowedTimeline(dir, "nextcloud-sim", now);
+    assert.ok(!escaped.stories.some((s) => s.id === "story-outside-1"));
+    assert.ok(escaped.skipped.some((s) => s.porch === "escape-porch" && s.reason === "bad porch address"));
+    assert.ok(!JSON.stringify(escaped).includes(outside));
+    await rm(outside, { recursive: true, force: true });
+
+    // Address book can live on a different backend label than the own read.
+    const fromDrive = await readContactFollowedTimeline(dir, "google-drive-sim", now, "nextcloud-sim");
+    assert.ok(fromDrive.stories.some((s) => s.id === "story-own-1" && s.origin === "google-drive-sim"));
+    assert.ok(fromDrive.stories.some((s) => s.id === "story-alex-1" && s.origin === "porch-alex"));
+  } finally {
+    if (savedIds === undefined) delete process.env.OWNPLACE_IDENTITY_DIR;
+    else process.env.OWNPLACE_IDENTITY_DIR = savedIds;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("contact follow: unverified own id does not fall through to a squat", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rooted-contact-squat-"));
+  const savedIds = process.env.OWNPLACE_IDENTITY_DIR;
+  process.env.OWNPLACE_IDENTITY_DIR = join(dir, "ids");
+  try {
+    const own = new LocalFolderStore(join(dir, "nextcloud-sim"));
+    await publishStory(
+      { title: "Own dup", body: "own", authorId: "kinfolk-me", authorName: "Me" },
+      { root: dir },
+      { createdAt: "2026-09-24T00:00:00.000Z", storyId: "story-dup-1" },
+    );
+    await publishStory(
+      { title: "Squat", body: "not mine", authorId: "kinfolk-alex", authorName: "Alex" },
+      { root: join(dir, "porch-alex") },
+      { createdAt: "2026-09-24T00:01:00.000Z", storyId: "story-dup-1" },
+    );
+    await addContact(own, validateContact({
+      id: "porch-alex", displayName: "Alex", address: "local:porch-alex/nextcloud-sim",
+    }));
+    await writeFile(join(dir, "nextcloud-sim/timeline/story-dup-1/story.json"), "{not json");
+    const now = "2026-09-24T00:02:00.000Z";
+    const merged = await readContactFollowedTimeline(dir, "nextcloud-sim", now);
+    assert.ok(!merged.stories.some((s) => s.id === "story-dup-1"));
+    await assert.rejects(readVerifiedFollowedStory(dir, "nextcloud-sim", "story-dup-1"));
   } finally {
     if (savedIds === undefined) delete process.env.OWNPLACE_IDENTITY_DIR;
     else process.env.OWNPLACE_IDENTITY_DIR = savedIds;

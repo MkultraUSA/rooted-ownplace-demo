@@ -21,8 +21,8 @@ import { isMediaList, isSafeReaderId, isSealedBody, loadOrCreateEncryptionIdenti
 // Re-exported for the web reader gate (M8 #66): same reader-id rule server-side.
 export { isSafeReaderId } from "@rooted/protocol";
 import { LocalFolderStore, WebDavStore, type ObjectStore } from "@rooted/storage";
-import { mkdir } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { mkdir, realpath } from "node:fs/promises";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -455,7 +455,8 @@ export async function readFollowedTimelines(
   const stories: TimelineEntry[] = [];
   const skipped: { porch: string; id: string; reason: string }[] = [];
   // Trust order = list order: the caller's own porch belongs first, and a
-  // same-id entry on a later porch never shadows it. Porch ids are
+  // same-id entry on a later porch never shadows it, including when the
+  // first porch has the id but failed verification. Porch ids are
   // author-chosen (not content-bound), so cross-porch id squats resolve
   // deterministically to the first-listed porch — callers must list their
   // own porch first and treat later duplicates as untrusted.
@@ -475,10 +476,137 @@ export async function readFollowedTimelines(
       seen.add(entry.id);
       stories.push({ ...entry, origin: porch.label });
     }
-    for (const s of read.skipped) skipped.push({ porch: porch.label, id: s.id, reason: s.reason });
+    for (const s of read.index.skipped ?? []) {
+      skipped.push({ porch: porch.label, id: s.id, reason: s.reason });
+      // An unverified package still owns its id. A later porch must not
+      // fill that hole with a same-id squat.
+      if (s.id !== "*") seen.add(s.id);
+    }
   }
   sortTimeline(stories);
   return { stories, skipped };
+}
+
+// M10 #76: pull followed porches named by the contact address book.
+// local: addresses resolve under storesRoot and must stay inside it
+// (lexical containment, then realpath; a symlink that escapes is skipped).
+// https: contacts are not fetched — remote pull is a later slice.
+// Origin is the own backend label, or the contact id when that id is a
+// porch label. Trust order is own porch first, then contacts list order.
+// A porch that already has an id owns it even if unverified, so a later
+// squat cannot fall through on story open.
+const FOLLOW_SKIP_REMOTE = "remote porch not fetched";
+const FOLLOW_SKIP_ADDRESS = "bad porch address";
+const FOLLOW_SKIP_LABEL = "bad porch label";
+
+function safePorchName(id: string): string {
+  return isPorchLabel(id) ? id : "contact";
+}
+
+async function containedPorchPath(storesRoot: string, rel: string): Promise<string | null> {
+  if (!rel || rel.startsWith("/") || rel.includes("\\") || rel.includes("\0")) return null;
+  const parts = rel.split("/");
+  if (parts.some((part) => part === "" || part === "." || part === "..")) return null;
+  const root = resolve(storesRoot);
+  const target = resolve(root, rel);
+  const lexical = relative(root, target);
+  if (lexical === "" || lexical.startsWith("..") || lexical.includes("../")) return null;
+  try {
+    const realTarget = await realpath(target);
+    let realRoot: string;
+    try {
+      realRoot = await realpath(root);
+    } catch {
+      return null;
+    }
+    const from = relative(realRoot, realTarget);
+    if (from.startsWith("..") || from.includes("../")) return null;
+    return realTarget;
+  } catch {
+    // Missing porch: lexical path is still inside the root. The read
+    // fails closed as unreadable rather than reaching outside.
+    return target;
+  }
+}
+
+interface ResolvedPorch {
+  label: string;
+  store: LocalFolderStore;
+  path: string;
+}
+
+async function resolveContactPorches(
+  storesRoot: string,
+  ownLabel: string,
+  contactsLabel: string,
+): Promise<{ porches: ResolvedPorch[]; skipped: { porch: string; id: string; reason: string }[] }> {
+  if (!isPorchLabel(ownLabel) || !isPorchLabel(contactsLabel)) throw new Error("bad porch label");
+  const ownPath = await containedPorchPath(storesRoot, ownLabel);
+  const contactsPath = await containedPorchPath(storesRoot, contactsLabel);
+  if (!ownPath || !contactsPath) throw new Error("bad porch label");
+  const ownStore = new LocalFolderStore(ownPath);
+  const contactsStore = contactsPath === ownPath ? ownStore : new LocalFolderStore(contactsPath);
+  const skipped: { porch: string; id: string; reason: string }[] = [];
+  const porches: ResolvedPorch[] = [{ label: ownLabel, store: ownStore, path: ownPath }];
+  const seen = new Set<string>([ownPath]);
+  const contacts = await readContacts(contactsStore);
+  for (const contact of contacts.contacts) {
+    const address = contact.address?.trim() ?? "";
+    if (!address) continue;
+    const porch = safePorchName(contact.id);
+    if (address.startsWith("https://")) {
+      skipped.push({ porch, id: "*", reason: FOLLOW_SKIP_REMOTE });
+      continue;
+    }
+    if (!address.startsWith("local:") || !isPorchAddress(address)) {
+      skipped.push({ porch, id: "*", reason: FOLLOW_SKIP_ADDRESS });
+      continue;
+    }
+    const rel = address.slice("local:".length);
+    const porchPath = await containedPorchPath(storesRoot, rel);
+    if (!porchPath) {
+      skipped.push({ porch, id: "*", reason: FOLLOW_SKIP_ADDRESS });
+      continue;
+    }
+    if (seen.has(porchPath)) continue;
+    if (!isPorchLabel(contact.id)) {
+      skipped.push({ porch, id: "*", reason: FOLLOW_SKIP_LABEL });
+      continue;
+    }
+    seen.add(porchPath);
+    porches.push({ label: contact.id, store: new LocalFolderStore(porchPath), path: porchPath });
+  }
+  return { porches, skipped };
+}
+
+export async function readContactFollowedTimeline(
+  storesRoot: string,
+  ownLabel: string,
+  now: string,
+  contactsLabel: string = ownLabel,
+): Promise<{ stories: TimelineEntry[]; skipped: { porch: string; id: string; reason: string }[] }> {
+  const { porches, skipped } = await resolveContactPorches(storesRoot, ownLabel, contactsLabel);
+  const merged = await readFollowedTimelines(
+    porches.map((porch) => ({ label: porch.label, store: porch.store })),
+    now,
+  );
+  return { stories: merged.stories, skipped: [...skipped, ...merged.skipped] };
+}
+
+export async function readVerifiedFollowedStory(
+  storesRoot: string,
+  ownLabel: string,
+  id: string,
+  contactsLabel: string = ownLabel,
+): Promise<Story> {
+  if (!isSafeHistoryId(id)) throw new Error("not found");
+  const { porches } = await resolveContactPorches(storesRoot, ownLabel, contactsLabel);
+  for (const porch of porches) {
+    // First porch that has the package owns the id, even if unverified.
+    if (!(await porch.store.exists(`timeline/${id}/manifest.json`))) continue;
+    return readVerifiedHistoryStory(porch.store, id);
+  }
+  throw new Error("not found");
 }
 
 export async function readIndex(store: ObjectStore, label: string, now: string): Promise<TimelineIndex> {
@@ -680,9 +808,9 @@ export function validateContact(input: { id?: unknown; displayName?: unknown; ad
     throw new Error("contact displayName is required");
   }
   const id = input.id.trim();
-  if (id.includes("/") || id.includes("\\") || id.includes("..") || id.length > 120) {
-    throw new Error("contact id contains unsafe characters");
-  }
+  // Origin tags on a merged timeline must be porch labels, so new follows
+  // cannot use an id that the merge would have to drop.
+  if (!isPorchLabel(id)) throw new Error("contact id contains unsafe characters");
   if (input.displayName.trim().length > 120) throw new Error("contact displayName too long");
   const address = typeof input.address === "string" ? input.address.trim() : "";
   if (!isPorchAddress(address)) throw new Error("contact address must be https or local: without traversal");
