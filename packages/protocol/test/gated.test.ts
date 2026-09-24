@@ -36,6 +36,7 @@ test("sealed body round-trips for the entitled reader only", () => {
   assert.deepEqual(tryOpenBody({ body: "", restricted: env }, reader.priv, "reader-bob"), {
     status: "opened",
     body: "paid story for bob",
+    media: [],
   });
   assert.deepEqual(tryOpenBody({ body: "", restricted: env }, stranger.priv, "stranger-x").status, "not-entitled");
   assert.deepEqual(tryOpenBody({ body: "", restricted: env }).status, "restricted");

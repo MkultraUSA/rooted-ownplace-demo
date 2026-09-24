@@ -63,7 +63,7 @@ export interface SealReader {
 
 export type OpenResult =
   | { status: "public"; body: string }
-  | { status: "opened"; body: string }
+  | { status: "opened"; body: string; media: string[] }
   | { status: "restricted" }
   | { status: "not-entitled" }
   | { status: "unreadable" };
@@ -310,7 +310,29 @@ export function tryOpenBody(
   if (story.body !== "" || !isSealedBody(story.restricted)) return { status: "unreadable" };
   if (readerPrivateKey === undefined) return { status: "restricted" };
   try {
-    return { status: "opened", body: unsealBody(story.restricted, readerPrivateKey, readerId) };
+    const plaintext = unsealBody(story.restricted, readerPrivateKey, readerId);
+    // M8 #65: v1 gated-content envelope carries sealed media alongside the
+    // body (canonical shape in mediagated.ts; parsed inline here to avoid a
+    // gated<->mediagated import cycle). Legacy bare-string envelopes open
+    // with empty media so pre-media packages keep working.
+    let body = plaintext;
+    let media: string[] = [];
+    try {
+      const parsed: unknown = JSON.parse(plaintext);
+      if (
+        parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) &&
+        (parsed as { v?: unknown }).v === 1 &&
+        typeof (parsed as { body?: unknown }).body === "string" &&
+        Array.isArray((parsed as { media?: unknown }).media) &&
+        ((parsed as { media: unknown[] }).media as unknown[]).every((u) => typeof u === "string")
+      ) {
+        body = (parsed as { body: string }).body;
+        media = (parsed as { media: string[] }).media;
+      }
+    } catch {
+      // Not JSON: legacy sealed string body.
+    }
+    return { status: "opened", body, media };
   } catch (e) {
     return e instanceof Error && e.message === "gated envelope is malformed"
       ? { status: "unreadable" }

@@ -17,7 +17,7 @@ import {
   type Kinfolk,
   type Story,
 } from "@rooted/protocol";
-import { isSafeReaderId, isSealedBody, sealBodyForReaders, tryOpenBody } from "@rooted/protocol";
+import { isMediaList, isSafeReaderId, isSealedBody, sealBodyForReaders, sealGatedContent, tryOpenBody } from "@rooted/protocol";
 import { LocalFolderStore, WebDavStore, type ObjectStore } from "@rooted/storage";
 import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -57,6 +57,7 @@ export interface ContactList {
 export interface StoryInput {
   title: string;
   body: string;
+  media?: string[];
   authorId?: string;
   authorName?: string;
   createdAt?: string;
@@ -72,7 +73,7 @@ export interface PublishResult {
 export const TITLE_MAX = 140;
 export const BODY_MAX = 5000;
 
-export function validateInput(input: StoryInput): { title: string; body: string; authorId: string; authorName: string } {
+export function validateInput(input: StoryInput): { title: string; body: string; media: string[]; authorId: string; authorName: string } {
   const { title, body } = input;
   if (typeof title !== "string" || !title.trim() || typeof body !== "string" || !body.trim()) {
     throw new Error("title and body are required and must be non-empty");
@@ -91,7 +92,12 @@ export function validateInput(input: StoryInput): { title: string; body: string;
   if (authorId.includes("/") || authorId.includes("\\") || authorId.includes("..")) {
     throw new Error("author-id contains unsafe characters");
   }
-  return { title: cleanTitle, body: cleanBody, authorId, authorName };
+  // M8 #65: publisher-supplied media pointers. Same readers as the body when
+  // gated (no per-audience partitioning per #58); public flow leaves clear
+  // media empty as before.
+  const media = input.media ?? [];
+  if (!isMediaList(media)) throw new Error("media must be a list of at most 8 https URLs");
+  return { title: cleanTitle, body: cleanBody, media, authorId, authorName };
 }
 
 export function isEntry(s: unknown): s is TimelineEntry {
@@ -423,7 +429,7 @@ export interface EntitleReader {
   readerPublicKey: string;
 }
 
-export function buildPackage(input: { title: string; body: string; authorId: string; authorName: string; createdAt: string; storyId: string }, opts: { entitle?: EntitleReader; entitleReaders?: EntitleReader[] } = {}) {
+export function buildPackage(input: { title: string; body: string; media?: string[]; authorId: string; authorName: string; createdAt: string; storyId: string }, opts: { entitle?: EntitleReader; entitleReaders?: EntitleReader[] } = {}) {
   const identity = loadOrCreateIdentity(input.authorId);
   const kinfolk: Kinfolk = { id: input.authorId, displayName: input.authorName, publicKey: identity.publicKey };
   const story: Story = {
@@ -448,7 +454,8 @@ export function buildPackage(input: { title: string; body: string; authorId: str
       seenReaderIds.add(r.readerId);
     }
     story.body = "";
-    story.restricted = sealBodyForReaders(input.body, readers);
+    story.media = [];
+    story.restricted = sealGatedContent(input.body, input.media ?? [], readers);
     // Emit entitled[] exactly matching the sealed envelope wrapped[]
     // readerIds, same order (derived from the envelope itself).
     const sealed = story.restricted as { wrapped: { readerId: string }[] };
