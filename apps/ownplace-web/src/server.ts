@@ -5,6 +5,7 @@
 // Endpoints:
 //   GET  /api/timeline?backend=nextcloud-sim        verified history timeline
 //   GET  /api/story?backend=B&id=ID                 verified history story
+//   POST /api/open  {backend?, id, readerKey, readerId?}  open sealed body+media
 //   GET  /api/contacts                              contact list
 //   POST /api/post        {title, body, authorId?, authorName?}
 //   POST /api/contacts    {id, displayName}  |  DELETE /api/contacts?id=ID
@@ -26,11 +27,13 @@ import {
   backendsFromEnv,
   defaultRepoRoot,
   isSafeHistoryId,
+  isSafeReaderId,
   publishStory,
   readAuthenticatedTimeline,
   readContacts,
   readVerifiedHistoryStory,
   removeContact,
+  tryOpenStory,
   validateContact,
   validateInput,
 } from "@rooted/timeline";
@@ -203,6 +206,65 @@ const server = http.createServer(async (req, res) => {
       } catch {
         send(res, 404, { error: "not found" });
       }
+      return;
+    }
+    // --- Sealed media reader (M8 #66) ---
+    // Opens a gated story's sealed body+media for a reader who presents
+    // their private key. Trust note (demo-grade, docs state this): the key
+    // transits server memory for this request only — never logged, never
+    // stored. No key: use /api/story (index metadata only, stranger-safe).
+    // Failures share one fixed message (no key-oracle, no reason split).
+    if (req.method === "POST" && pathname === "/api/open") {
+      let input: unknown;
+      try {
+        input = await readJsonBody(req);
+      } catch (e) {
+        if (e instanceof BodyTooLargeError) send(res, 413, { error: "body too large" });
+        else send(res, 400, { error: "invalid JSON body" });
+        return;
+      }
+      const rec = (input ?? {}) as Record<string, unknown>;
+      const backend = typeof rec.backend === "string" ? rec.backend : "nextcloud-sim";
+      if (backend !== "nextcloud-sim" && backend !== "google-drive-sim") {
+        send(res, 400, { error: "unknown backend" });
+        return;
+      }
+      const id = typeof rec.id === "string" ? rec.id : "";
+      if (!id || !isSafeHistoryId(id) || id.includes("\0")) {
+        send(res, 400, { error: "bad id" });
+        return;
+      }
+      // Public stories open keyless (reads are public by design): load and
+      // branch before demanding a key, so unrestricted packages keep their
+      // old shape. Falsy check covers cross-version missing/null markers.
+      let story;
+      try {
+        story = await readVerifiedHistoryStory(simStore(backend), id);
+      } catch {
+        send(res, 404, { error: "not found" });
+        return;
+      }
+      if (!story.restricted) {
+        send(res, 200, { status: "public", body: story.body, media: [] });
+        return;
+      }
+      const readerKey = typeof rec.readerKey === "string" ? rec.readerKey : "";
+      if (!readerKey || readerKey.length > 8192) {
+        send(res, 400, { error: "bad reader key" });
+        return;
+      }
+      const rawReaderId = rec.readerId;
+      const readerId = rawReaderId === undefined ? undefined : typeof rawReaderId === "string" ? rawReaderId : null;
+      if (readerId === null || (readerId !== undefined && !isSafeReaderId(readerId))) {
+        send(res, 400, { error: "bad reader id" });
+        return;
+      }
+      const opened = tryOpenStory(story, readerKey, readerId);
+      if (opened.status !== "opened") {
+        send(res, 403, { error: "cannot open" });
+        return;
+      }
+      send(res, 200, { status: "opened", body: opened.body, media: opened.media });
       return;
     }
     if (req.method === "GET" && pathname === "/api/contacts") {

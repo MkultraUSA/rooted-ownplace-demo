@@ -1,10 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
+import { buildPackage } from "@rooted/timeline";
 import http from "node:http";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -202,4 +204,81 @@ test("web API login accepts the token and rejects anything else (#49)", async ()
     client.close();
     await rm(tmp, { recursive: true, force: true });
   }
+});
+
+// M8 #66: sealed reader path. Entitled key opens body+media; everyone else
+// gets index metadata only; nothing sealed leaks in the clear.
+test("web API sealed open serves media to the entitled key only (#66)", async () => {
+  const { client, tmp } = await boot();
+  try {
+    const reader = generateKeyPairSync("x25519");
+    const stranger = generateKeyPairSync("x25519");
+    const priv = reader.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const readerPub = reader.publicKey.export({ type: "spki", format: "pem" }).toString();
+    const strangerPriv = stranger.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const media = ["https://example.com/a.jpg", "https://example.com/b.mp4"];
+    const storyId = "story-sealed-media-1";
+    const savedIds = process.env.OWNPLACE_IDENTITY_DIR;
+    process.env.OWNPLACE_IDENTITY_DIR = join(tmp, "ids");
+    let files: Record<string, Uint8Array>;
+    try {
+      files = buildPackage(
+        {
+          title: "Gated post", body: "sealed words", media,
+          authorId: "kinfolk-alex", authorName: "Alex",
+          createdAt: "2026-09-20T00:00:00.000Z", storyId,
+        },
+        { entitle: { readerId: "reader-bob", readerPublicKey: readerPub } },
+      ).files as Record<string, Uint8Array>;
+    } finally {
+      if (savedIds === undefined) delete process.env.OWNPLACE_IDENTITY_DIR;
+      else process.env.OWNPLACE_IDENTITY_DIR = savedIds;
+    }
+    const dir = join(tmp, "nextcloud-sim/timeline", storyId);
+    await mkdir(dir, { recursive: true });
+    for (const [name, bytes] of Object.entries(files)) await writeFile(join(dir, name), bytes);
+
+    // 1. Entitled reader opens body+media.
+    const opened = await client.request(
+      "POST", "/api/open",
+      JSON.stringify({ id: storyId, readerKey: priv, readerId: "reader-bob" }),
+    );
+    assert.equal(opened.status, 200);
+    assert.deepStrictEqual(opened.json, { status: "opened", body: "sealed words", media });
+
+    // 2. Cleartext carries nothing sealed: story JSON + index have no URLs.
+    const story = await client.request("GET", `/api/story?backend=nextcloud-sim&id=${storyId}`);
+    assert.equal(story.status, 200);
+    assert.ok(!JSON.stringify(story.json).includes("example.com"), "sealed media leaked in clear story");
+    const timeline = await client.request("GET", "/api/timeline?backend=nextcloud-sim");
+    assert.ok(!JSON.stringify(timeline.json).includes("example.com"), "sealed media leaked in index");
+
+    // 3. Stranger key, missing key, bad id/backend -> fixed leak-free errors.
+    assertError(
+      await client.request("POST", "/api/open", JSON.stringify({ id: storyId, readerKey: strangerPriv, readerId: "stranger-x" })),
+      403, { error: "cannot open" },
+    );
+    assertError(await client.request("POST", "/api/open", JSON.stringify({ id: storyId })), 400, {
+      error: "bad reader key",
+    });
+    assertError(await client.request("POST", "/api/open", JSON.stringify({ id: "../evil", readerKey: priv })), 400, {
+      error: "bad id",
+    });
+    assertError(
+      await client.request("POST", "/api/open", JSON.stringify({ backend: "nope", id: storyId, readerKey: priv })),
+      400, { error: "unknown backend" },
+    );
+
+    // 4. Public stories open without a key, unchanged shape.
+    const posted = await client.request("POST", "/api/post", JSON.stringify({ title: "Open post", body: "open words" }));
+    assert.equal(posted.status, 201);
+    const pubId = ((posted.json ?? {}) as { storyId?: unknown }).storyId;
+    assert.equal(typeof pubId, "string");
+    const pubOpen = await client.request("POST", "/api/open", JSON.stringify({ id: pubId }));
+    assert.deepStrictEqual(pubOpen.json, { status: "public", body: "open words", media: [] });
+  } finally {
+    client.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+  await new Promise((r) => setTimeout(r, 200));
 });
