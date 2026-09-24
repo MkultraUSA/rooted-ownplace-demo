@@ -17,7 +17,7 @@ import {
   type Kinfolk,
   type Story,
 } from "@rooted/protocol";
-import { isMediaList, isSafeReaderId, isSealedBody, sealBodyForReaders, sealGatedContent, tryOpenBody } from "@rooted/protocol";
+import { isMediaList, isSafeReaderId, isSealedBody, loadOrCreateEncryptionIdentity, sealBodyForReaders, sealGatedContent, tryOpenBody } from "@rooted/protocol";
 // Re-exported for the web reader gate (M8 #66): same reader-id rule server-side.
 export { isSafeReaderId } from "@rooted/protocol";
 import { LocalFolderStore, WebDavStore, type ObjectStore } from "@rooted/storage";
@@ -608,12 +608,13 @@ export function backendsFromEnv(repoRoot: string): BackendSet {
 export async function publishStory(
   validated: { title: string; body: string; media?: string[]; authorId: string; authorName: string },
   backends: BackendSet,
-  opts: { createdAt?: string; storyId?: string; entitle?: EntitleReader; entitleReaders?: EntitleReader[] } = {}
+  opts: { createdAt?: string; storyId?: string; entitle?: EntitleReader; entitleReaders?: EntitleReader[]; membersOnly?: boolean } = {}
 ): Promise<PublishResult> {
   const now = opts.createdAt ?? new Date().toISOString();
   const storyId = opts.storyId ?? makeStoryId(now);
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(storyId)) throw new Error("unsafe story id");
-  const { files, story } = buildPackage({ ...validated, createdAt: now, storyId }, { entitle: opts.entitle, entitleReaders: opts.entitleReaders });
+  const entitleReaders = await mergeSubscriberReaders(backends, opts, validated.authorId);
+  const { files, story } = buildPackage({ ...validated, createdAt: now, storyId }, entitleReaders.length ? { entitleReaders } : {});
   const published: string[] = [];
   const skipped: string[] = [];
 
@@ -703,6 +704,95 @@ export async function removeContact(store: ObjectStore, id: string): Promise<Con
   await store.writeObject("contacts.json", new TextEncoder().encode(`${JSON.stringify(list)}\n`));
   return list;
 }
+
+export interface Subscriber {
+  readerId: string;
+  readerPublicKey: string;
+  addedAt: string;
+}
+export interface SubscriberList {
+  protocol: "rooted/v0.1";
+  kind: "subscribers";
+  updatedAt: string;
+  subscribers: Subscriber[];
+}
+
+const SUBSCRIBERS_FILE = "subscribers.json";
+const SUBSCRIBER_KEY_MAX = 8192;
+
+export function validateSubscriber(input: { readerId?: unknown; readerPublicKey?: unknown }): Subscriber {
+  if (!isSafeReaderId(input?.readerId)) throw new Error("subscriber readerId is unsafe");
+  if (typeof input?.readerPublicKey !== "string") throw new Error("subscriber readerPublicKey is required");
+  const readerPublicKey = input.readerPublicKey.trim();
+  if (readerPublicKey.length < 32 || readerPublicKey.length > SUBSCRIBER_KEY_MAX) {
+    throw new Error("subscriber readerPublicKey length is invalid");
+  }
+  if (!readerPublicKey.includes("BEGIN") || !readerPublicKey.includes("PUBLIC KEY")) {
+    throw new Error("subscriber readerPublicKey must be a PEM public key");
+  }
+  return { readerId: input.readerId, readerPublicKey, addedAt: new Date().toISOString() };
+}
+
+export async function readSubscribers(store: ObjectStore): Promise<SubscriberList> {
+  try {
+    const raw = new TextDecoder().decode(await store.readObject(SUBSCRIBERS_FILE));
+    const parsed = JSON.parse(raw) as Partial<SubscriberList>;
+    if (parsed && Array.isArray(parsed.subscribers)) {
+      const subscribers = parsed.subscribers.filter(
+        (s): s is Subscriber =>
+          isSafeReaderId(s?.readerId) && typeof s?.readerPublicKey === "string" && s.readerPublicKey.length > 0,
+      );
+      return {
+        protocol: "rooted/v0.1",
+        kind: "subscribers",
+        updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
+        subscribers,
+      };
+    }
+  } catch {
+    // missing/unreadable: empty list
+  }
+  return { protocol: "rooted/v0.1", kind: "subscribers", updatedAt: new Date().toISOString(), subscribers: [] };
+}
+
+export async function addSubscriber(store: ObjectStore, subscriber: Subscriber): Promise<SubscriberList> {
+  const list = await readSubscribers(store);
+  const existing = list.subscribers.find((s) => s.readerId === subscriber.readerId);
+  if (existing) existing.readerPublicKey = subscriber.readerPublicKey;
+  else list.subscribers.push(subscriber);
+  list.subscribers.sort((a, b) => a.readerId.localeCompare(b.readerId));
+  list.updatedAt = new Date().toISOString();
+  await store.writeObject(SUBSCRIBERS_FILE, new TextEncoder().encode(`${JSON.stringify(list)}\n`));
+  return list;
+}
+
+async function mergeSubscriberReaders(
+  backends: BackendSet,
+  opts: { entitle?: EntitleReader; entitleReaders?: EntitleReader[]; membersOnly?: boolean },
+  authorId: string,
+): Promise<EntitleReader[]> {
+  const readers: EntitleReader[] = [...(opts.entitleReaders ?? []), ...(opts.entitle ? [opts.entitle] : [])];
+  const gated = opts.membersOnly === true || readers.length > 0;
+  if (!gated) return [];
+  const seen = new Set(readers.map((r) => r.readerId));
+  if (opts.membersOnly === true && isSafeReaderId(authorId) && !seen.has(authorId)) {
+    const enc = loadOrCreateEncryptionIdentity(authorId);
+    seen.add(authorId);
+    readers.push({ readerId: authorId, readerPublicKey: enc.publicKey });
+  }
+  const store = new LocalFolderStore(resolve(backends.root, "nextcloud-sim"));
+  const roster = await readSubscribers(store);
+  for (const s of roster.subscribers) {
+    if (seen.has(s.readerId)) continue;
+    seen.add(s.readerId);
+    readers.push({ readerId: s.readerId, readerPublicKey: s.readerPublicKey });
+  }
+  if (opts.membersOnly === true && readers.length === 0) {
+    throw new Error("members-only post needs at least one subscriber or entitled reader");
+  }
+  return readers;
+}
+
 
 export function defaultRepoRoot(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "../../..");

@@ -14,7 +14,7 @@ function arg(name: string): string | undefined {
   return value;
 }
 
-const USAGE = 'usage: npm run post -- --title "TITLE" --body "BODY" [--author-id ID] [--author-name NAME] [--entitle-reader ID --reader-pubkey FILE] [--entitle-readers JSONFILE]';
+const USAGE = 'usage: npm run post -- --title "TITLE" --body "BODY" [--author-id ID] [--author-name NAME] [--members-only] [--entitle-reader ID --reader-pubkey FILE] [--entitle-readers JSONFILE]';
 
 function fail(message: string): never {
   console.error(`post failed: ${message}`);
@@ -108,5 +108,6 @@ if (entitleReadersFile !== undefined) {
   }
   entitleReaders = batch;
 }
-const res = await publishStory(validated, backendsFromEnv(defaultRepoRoot()), { entitle, entitleReaders });
+const membersOnly = process.argv.includes("--members-only");
+const res = await publishStory(validated, backendsFromEnv(defaultRepoRoot()), { entitle, entitleReaders, membersOnly });
 console.log(`done: ${res.backends.join(", ")} story=${res.storyId} author=${res.authorId}`);
