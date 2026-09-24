@@ -12,11 +12,11 @@
 // deferred per #58, not solved here.
 
 import type { SealReader, SealedBody } from "./gated.js";
-import { sealBodyForReaders, unsealBody } from "./gated.js";
+import { isMediaList, sealBodyForReaders, unsealBody } from "./gated.js";
+
+export { isMediaList, MAX_MEDIA_ITEMS, MAX_MEDIA_URL_CHARS } from "./gated.js";
 
 export const GATED_CONTENT_VERSION = 1;
-export const MAX_MEDIA_ITEMS = 8;
-export const MAX_MEDIA_URL_CHARS = 2048;
 
 export interface GatedContent {
   v: typeof GATED_CONTENT_VERSION;
@@ -28,22 +28,6 @@ export interface OpenedGatedContent {
   body: string;
   media: string[];
   legacy: boolean;
-}
-
-export function isMediaList(value: unknown): value is string[] {
-  // Media lives in poster Drive/Nextcloud folders fetched over TLS (#58),
-  // so only https pointers seal. Anything else is rejected, never stored.
-  return (
-    Array.isArray(value) &&
-    value.length <= MAX_MEDIA_ITEMS &&
-    value.every(
-      (u): u is string =>
-        typeof u === "string" &&
-        u.length >= 9 &&
-        u.length <= MAX_MEDIA_URL_CHARS &&
-        u.startsWith("https://"),
-    )
-  );
 }
 
 function isGatedContent(value: unknown): value is GatedContent {

@@ -12,8 +12,9 @@ import {
   publishStory,
   readIndex,
   tryOpenStory,
+  validateInput,
 } from "../src/index.js";
-import { createManifest, hashObject, isSealedBody, objectBytes, signManifest } from "@rooted/protocol";
+import { createManifest, hashObject, isSealedBody, objectBytes, openGatedContent, signManifest } from "@rooted/protocol";
 
 function x25519Pair() {
   const pair = generateKeyPairSync("x25519");
@@ -646,5 +647,89 @@ test("verify path rejects plaintext media on gated packages", async () => {
     await assert.rejects(fetchVerifiedHistoryPackage(store, "story-badmedia"), /plaintext media/);
     const v1 = await fetchVerifiedHistoryPackage(store, "story-v1media");
     assert.equal(v1.story.id, "story-v1media");
+  });
+});
+
+test("M8 #65 gated build seals media with the body; clear media stays empty", async () => {
+  await withIdDir(async () => {
+    const reader = x25519Pair();
+    const media = ["https://example.com/a.jpg", "https://example.com/b.mp4"];
+    const pkg = buildPackage(
+      {
+        title: "Paid post", body: "paywalled words", media, authorId: "kinfolk-alex",
+        authorName: "Alex", createdAt: "2026-09-20T00:00:00.000Z", storyId: "story-gated-media-1",
+      },
+      { entitle: { readerId: "reader-bob", readerPublicKey: reader.pub } },
+    );
+    assert.equal(pkg.story.body, "");
+    assert.deepEqual(pkg.story.media, []);
+    assert.equal(isSealedBody(pkg.story.restricted), true);
+    const opened = openGatedContent(pkg.story.restricted, reader.priv, "reader-bob");
+    assert.equal(opened.legacy, false);
+    assert.equal(opened.body, "paywalled words");
+    assert.deepEqual(opened.media, media);
+  });
+});
+
+test("M8 #65 gated publish with media verifies green on both sims", async () => {
+  await withIdDir(async (dir) => {
+    const reader = x25519Pair();
+    const media = ["https://example.com/a.jpg"];
+    const root = join(dir, "stores");
+    const validated = validateInput({
+      title: "Paid post", body: "paywalled words", media,
+      authorId: "kinfolk-alex", authorName: "Alex",
+    });
+    const res = await publishStory(validated, { root }, {
+      createdAt: "2026-09-20T00:00:00.000Z",
+      storyId: "story-gated-media-2",
+      entitle: { readerId: "reader-bob", readerPublicKey: reader.pub },
+    });
+    assert.ok(res.backends.includes("nextcloud-sim"));
+    assert.ok(res.backends.includes("google-drive-sim"));
+    const a = await readFile(join(root, "nextcloud-sim/timeline/story-gated-media-2/story.json"), "utf8");
+    const b = await readFile(join(root, "google-drive-sim/timeline/story-gated-media-2/story.json"), "utf8");
+    assert.equal(a, b);
+    assert.ok(!a.includes("example.com"), "sealed media must not leak into clear JSON");
+    for (const backend of ["nextcloud-sim", "google-drive-sim"]) {
+      const store = new LocalFolderStore(join(root, backend));
+      const story = (await fetchVerifiedHistoryPackage(store, "story-gated-media-2")).story;
+      assert.equal(story.body, "");
+      assert.deepEqual(story.media, []);
+      const opened = openGatedContent(story.restricted, reader.priv, "reader-bob");
+      assert.deepEqual(opened.media, media);
+    }
+  });
+});
+
+test("M8 #65 publisher rejects bad media; public flow unchanged", async () => {
+  assert.throws(
+    () => validateInput({ title: "T", body: "B", media: ["http://example.com/a.jpg"] }),
+    /media/,
+  );
+  assert.throws(
+    () =>
+      validateInput({
+        title: "T", body: "B",
+        media: Array.from({ length: 9 }, (_, i) => `https://example.com/${i}.jpg`),
+      }),
+    /media/,
+  );
+  assert.deepEqual(validateInput({ title: "T", body: "B" }).media, []);
+  assert.throws(
+    () => validateInput({ title: "T", body: "B", media: null as unknown as string[] }),
+    /media/,
+  );
+  // Public (unentitled) packages keep the old shape: clear body, empty media.
+  await withIdDir(async () => {
+    const pkg = buildPackage(
+      {
+        title: "Public post", body: "open words", authorId: "kinfolk-alex",
+        authorName: "Alex", createdAt: "2026-09-20T00:00:00.000Z", storyId: "story-public-media-1",
+      },
+    );
+    assert.equal(pkg.story.body, "open words");
+    assert.deepEqual(pkg.story.media, []);
+    assert.equal(pkg.story.restricted, undefined);
   });
 });

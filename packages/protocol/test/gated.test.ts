@@ -36,6 +36,7 @@ test("sealed body round-trips for the entitled reader only", () => {
   assert.deepEqual(tryOpenBody({ body: "", restricted: env }, reader.priv, "reader-bob"), {
     status: "opened",
     body: "paid story for bob",
+    media: [],
   });
   assert.deepEqual(tryOpenBody({ body: "", restricted: env }, stranger.priv, "stranger-x").status, "not-entitled");
   assert.deepEqual(tryOpenBody({ body: "", restricted: env }).status, "restricted");
@@ -170,4 +171,14 @@ test("tampered second entry does not break the first", () => {
   assert.equal(unsealBody(tampered, a.priv, "reader-a"), "shared secret");
   assert.throws(() => unsealBody(tampered, b.priv, "reader-b"), /not entitled/);
   assert.deepEqual(tryOpenBody({ body: "", restricted: tampered }, a.priv, "reader-a").status, "opened");
+});
+
+test("v1 envelope with off-contract media fails closed on open", () => {
+  const reader = x25519Pair();
+  const bad = sealBody(
+    JSON.stringify({ v: 1, body: "author-crafted", media: ["http://evil.example/x"] }),
+    reader.pub,
+    "reader-bob",
+  );
+  assert.deepEqual(tryOpenBody({ body: "", restricted: bad }, reader.priv, "reader-bob").status, "unreadable");
 });
