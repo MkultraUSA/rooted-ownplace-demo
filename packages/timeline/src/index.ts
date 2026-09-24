@@ -17,7 +17,7 @@ import {
   type Kinfolk,
   type Story,
 } from "@rooted/protocol";
-import { isMediaList, isSafeReaderId, isSealedBody, sealBodyForReaders, sealGatedContent, tryOpenBody } from "@rooted/protocol";
+import { isMediaList, isSafeReaderId, isSealedBody, loadOrCreateEncryptionIdentity, sealBodyForReaders, sealGatedContent, tryOpenBody } from "@rooted/protocol";
 // Re-exported for the web reader gate (M8 #66): same reader-id rule server-side.
 export { isSafeReaderId } from "@rooted/protocol";
 import { LocalFolderStore, WebDavStore, type ObjectStore } from "@rooted/storage";
@@ -613,7 +613,7 @@ export async function publishStory(
   const now = opts.createdAt ?? new Date().toISOString();
   const storyId = opts.storyId ?? makeStoryId(now);
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(storyId)) throw new Error("unsafe story id");
-  const entitleReaders = await mergeSubscriberReaders(backends, opts);
+  const entitleReaders = await mergeSubscriberReaders(backends, opts, validated.authorId);
   const { files, story } = buildPackage({ ...validated, createdAt: now, storyId }, entitleReaders.length ? { entitleReaders } : {});
   const published: string[] = [];
   const skipped: string[] = [];
@@ -769,13 +769,19 @@ export async function addSubscriber(store: ObjectStore, subscriber: Subscriber):
 async function mergeSubscriberReaders(
   backends: BackendSet,
   opts: { entitle?: EntitleReader; entitleReaders?: EntitleReader[]; membersOnly?: boolean },
+  authorId: string,
 ): Promise<EntitleReader[]> {
   const readers: EntitleReader[] = [...(opts.entitleReaders ?? []), ...(opts.entitle ? [opts.entitle] : [])];
   const gated = opts.membersOnly === true || readers.length > 0;
   if (!gated) return [];
+  const seen = new Set(readers.map((r) => r.readerId));
+  if (opts.membersOnly === true && isSafeReaderId(authorId) && !seen.has(authorId)) {
+    const enc = loadOrCreateEncryptionIdentity(authorId);
+    seen.add(authorId);
+    readers.push({ readerId: authorId, readerPublicKey: enc.publicKey });
+  }
   const store = new LocalFolderStore(resolve(backends.root, "nextcloud-sim"));
   const roster = await readSubscribers(store);
-  const seen = new Set(readers.map((r) => r.readerId));
   for (const s of roster.subscribers) {
     if (seen.has(s.readerId)) continue;
     seen.add(s.readerId);

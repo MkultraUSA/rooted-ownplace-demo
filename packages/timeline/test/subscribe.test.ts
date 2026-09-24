@@ -5,6 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LocalFolderStore } from "@rooted/storage";
+import { loadOrCreateEncryptionIdentity } from "@rooted/protocol";
 import {
   addSubscriber,
   publishStory,
@@ -64,6 +65,9 @@ test("subscriber opens posts published after subscribe; earlier posts stay close
     const opened = tryOpenStory(newStory, bob.priv, "reader-bob");
     assert.equal(opened.status, "opened");
     if (opened.status === "opened") assert.equal(opened.body, "new members only");
+    const author = loadOrCreateEncryptionIdentity("kinfolk-alex");
+    const authorOpen = tryOpenStory(newStory, author.privateKey, "kinfolk-alex");
+    assert.equal(authorOpen.status, "opened");
 
     assert.equal(tryOpenStory(newStory, stranger.priv, "stranger-x").status, "not-entitled");
     assert.equal(newStory.title, "After sub");
