@@ -31,8 +31,10 @@ New packages use persistent Ed25519 Kinfolk identities. The publisher stores pri
 
 - `packages/protocol`: Kinfolk, story, manifest, signature types and canonical hashing.
 - `packages/storage`: `ObjectStore` and `LocalFolderStore`, with WebDAV and Google Drive scaffolds.
+- `packages/timeline`: shared story-package build, verified index read/rebuild, and syndication to every backend.
 - `apps/creator-bot`: sample package publisher.
 - `apps/client-sims`: headless Kinfolk clients that verify both stores (hashes, signature, cross-backend match).
 - `apps/ownplace-web`: Vite/React reader for both simulations.
+- `apps/voice-bridge`: Python Slack Socket Mode listener bridging push-to-talk meeting turns to OpenCode reasoning.
 - `docs/architecture.md`: data flow and adapter boundary.
 - `docs/google-drive-access.md`: safe future authorization procedure.
