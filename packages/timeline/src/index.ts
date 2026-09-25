@@ -631,8 +631,10 @@ export async function readVerifiedFollowedStory(
   for (const porch of porches) {
     // Any file under the id owns it, even with no manifest, so a squat
     // cannot fall through when the first porch is only partly present.
-    const listed = await porch.store.listObjects(`timeline/${id}/`);
-    if (listed.length === 0) continue;
+    const listed = await porch.store.listObjects("timeline/");
+    const prefix = `timeline/${id}`;
+    const owns = listed.some((p) => p === prefix || p.startsWith(prefix + "/"));
+    if (!owns) continue;
     return readVerifiedHistoryStory(porch.store, id);
   }
   throw new Error("not found");

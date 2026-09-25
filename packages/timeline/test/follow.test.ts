@@ -276,3 +276,58 @@ test("contact follow: unverified own id does not fall through to a squat", async
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("contact follow: in-porch timeline symlink is not followed or filled", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rooted-contact-linkid-"));
+  const savedIds = process.env.OWNPLACE_IDENTITY_DIR;
+  process.env.OWNPLACE_IDENTITY_DIR = join(dir, "ids");
+  try {
+    const outside = await mkdtemp(join(tmpdir(), "rooted-linkid-out-"));
+    await publishStory(
+      { title: "Outside", body: "leaked", authorId: "kinfolk-out", authorName: "Out" },
+      { root: outside },
+      { createdAt: "2026-09-24T00:04:00.000Z", storyId: "story-link-1" },
+    );
+    const porchRoot = join(dir, "porch-link");
+    await publishStory(
+      { title: "Kept", body: "stays", authorId: "kinfolk-link", authorName: "Link" },
+      { root: porchRoot },
+      { createdAt: "2026-09-24T00:01:00.000Z", storyId: "story-kept-1" },
+    );
+    await mkdir(join(porchRoot, "nextcloud-sim/timeline"), { recursive: true });
+    await symlink(
+      join(outside, "nextcloud-sim/timeline/story-link-1"),
+      join(porchRoot, "nextcloud-sim/timeline/story-link-1"),
+    );
+    await publishStory(
+      { title: "Fill", body: "should not fill", authorId: "kinfolk-fill", authorName: "Fill" },
+      { root: join(dir, "porch-fill") },
+      { createdAt: "2026-09-24T00:05:00.000Z", storyId: "story-link-1" },
+    );
+    const own = new LocalFolderStore(join(dir, "nextcloud-sim"));
+    await publishStory(
+      { title: "Own", body: "mine", authorId: "kinfolk-me", authorName: "Me" },
+      { root: dir },
+      { createdAt: "2026-09-24T00:00:00.000Z", storyId: "story-own-1" },
+    );
+    await addContact(own, validateContact({
+      id: "porch-link", displayName: "A Link", address: "local:porch-link/nextcloud-sim",
+    }));
+    await addContact(own, validateContact({
+      id: "porch-fill", displayName: "Fill", address: "local:porch-fill/nextcloud-sim",
+    }));
+    const now = "2026-09-24T00:06:00.000Z";
+    const merged = await readContactFollowedTimeline(dir, "nextcloud-sim", now);
+    assert.ok(merged.stories.some((s) => s.id === "story-kept-1"));
+    assert.ok(merged.stories.some((s) => s.id === "story-own-1"));
+    assert.ok(!merged.stories.some((s) => s.id === "story-link-1"));
+    assert.ok(!JSON.stringify(merged).includes("leaked"));
+    assert.ok(!JSON.stringify(merged).includes(outside));
+    await assert.rejects(readVerifiedFollowedStory(dir, "nextcloud-sim", "story-link-1"));
+    await rm(outside, { recursive: true, force: true });
+  } finally {
+    if (savedIds === undefined) delete process.env.OWNPLACE_IDENTITY_DIR;
+    else process.env.OWNPLACE_IDENTITY_DIR = savedIds;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
