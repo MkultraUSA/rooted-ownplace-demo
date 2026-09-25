@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LocalFolderStore, WebDavStore } from "../src/index.js";
@@ -65,4 +65,23 @@ test("LocalFolderStore deleteObject rejects unsafe paths", async () => {
     const store = new LocalFolderStore(root);
     await assert.rejects(() => store.deleteObject("../../evil.txt"), /escapes root|unsafe/);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("LocalFolderStore refuses a symlink root even when the final component is missing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rooted-store-link-"));
+  const outside = await mkdtemp(join(tmpdir(), "rooted-store-out-"));
+  try {
+    const link = join(root, "link");
+    await symlink(outside, link);
+    const store = new LocalFolderStore(link);
+    await assert.rejects(
+      () => store.writeObject("nested/new.txt", new TextEncoder().encode("x")),
+      /escapes root/,
+    );
+    assert.throws(() => store.readObject("missing.txt"), /escapes root/);
+    await assert.equal(await import("node:fs/promises").then((fs) => fs.access(join(outside, "nested/new.txt")).then(() => true, () => false)), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
 });
