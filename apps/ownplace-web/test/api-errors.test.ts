@@ -347,3 +347,24 @@ test("web timeline merges local followed porches and isolates tamper (#76)", asy
     await rm(tmp, { recursive: true, force: true });
   }
 });
+
+test("web follow/unfollow round-trip keeps the porch address (#77)", async () => {
+  const { client, tmp } = await boot();
+  try {
+    const added = await client.request("POST", "/api/contacts", JSON.stringify({
+      id: "porch-alex", displayName: "Alex", address: "local:porch-alex/nextcloud-sim",
+    }));
+    assert.equal(added.status, 201);
+    const listed = await client.request("GET", "/api/contacts");
+    const contacts = ((listed.json ?? {}) as { contacts?: { id: string; address?: string }[] }).contacts ?? [];
+    assert.equal(contacts.find((c) => c.id === "porch-alex")?.address, "local:porch-alex/nextcloud-sim");
+    const removed = await client.request("DELETE", "/api/contacts?id=porch-alex");
+    assert.equal(removed.status, 200);
+    const after = await client.request("GET", "/api/contacts");
+    const left = ((after.json ?? {}) as { contacts?: { id: string }[] }).contacts ?? [];
+    assert.equal(left.some((c) => c.id === "porch-alex"), false);
+  } finally {
+    client.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
