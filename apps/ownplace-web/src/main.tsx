@@ -1,8 +1,9 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
+import { originLabel } from "./origin";
 
-type TimelineEntry = { id: string; title: string; authorId: string; createdAt: string; verified?: boolean };
+type TimelineEntry = { id: string; title: string; authorId: string; createdAt: string; verified?: boolean; origin?: string };
 type Timeline = { stories: TimelineEntry[] };
 type Story = { id: string; title: string; body: string; createdAt: string; authorId: string; restricted?: unknown };
 type Contact = { id: string; displayName: string; addedAt: string; address?: string };
@@ -169,7 +170,7 @@ function Composer({ onPosted }: { onPosted: () => void }) {
   );
 }
 
-function Contacts() {
+function Contacts({ onChanged }: { onChanged?: () => void }) {
   const [list, setList] = useState<Contact[]>([]);
   const [id, setId] = useState("");
   const [name, setName] = useState("");
@@ -203,6 +204,7 @@ function Contacts() {
       setName("");
       setAddress("");
       refresh();
+      onChanged?.();
     }
   }
   async function remove(contactId: string) {
@@ -215,11 +217,12 @@ function Contacts() {
       return;
     }
     refresh();
+    onChanged?.();
   }
   return (
     <section className="composer">
       <h2>Syndication contacts</h2>
-      <p className="lede">Kinfolk you follow. Posts reach everyone here.</p>
+      <p className="lede">Kinfolk you follow. Timeline entries are labeled with the porch they came from.</p>
       <ul>
         {list.map((c) => (
           <li key={c.id}>
@@ -338,6 +341,15 @@ function Unlocker({ backend, id }: { backend: string; id: string }) {
 
 function BackendColumn({ backend, refresh }: { backend: string; refresh: number }) {
   const state = useBackend(backend, refresh);
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  useEffect(() => {
+    fetch("/api/contacts")
+      .then(async (res) => {
+        const parsed = (await safeJson(res)) as ContactList | null;
+        setContacts(Array.isArray(parsed?.contacts) ? parsed.contacts : []);
+      })
+      .catch(() => setContacts([]));
+  }, [refresh]);
   return (
     <article>
       <div className="card-head">
@@ -363,9 +375,10 @@ function BackendColumn({ backend, refresh }: { backend: string; refresh: number 
         <>
           {state.entries.map((e) => {
             const s = state.stories[e.id];
+            const from = originLabel(e.origin, backend, contacts);
             return (
               <div key={e.id} className="story">
-                <p className="date">{formatDate(e.createdAt)} · verified signature</p>
+                <p className="date">{formatDate(e.createdAt)} · verified signature{from ? ` · ${from}` : ""}</p>
                 <h3>{e.title}</h3>
                 {s ? (s.restricted !== undefined ? <Unlocker backend={backend} id={e.id} /> : <p>{s.body}</p>) : <p>Story unavailable or failed verification for this entry.</p>}
                 <footer>
@@ -480,7 +493,7 @@ function App() {
             <button onClick={() => logout()}>Log out</button>
           </p>
           <Composer onPosted={() => setRefresh((n) => n + 1)} />
-          <Contacts />
+          <Contacts onChanged={() => setRefresh((n) => n + 1)} />
         </>
       )}
       <div className="grid">
