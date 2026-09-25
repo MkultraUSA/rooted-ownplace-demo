@@ -1,3 +1,4 @@
+import { lstatSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, writeFile, access } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 
@@ -13,9 +14,46 @@ export class LocalFolderStore implements ObjectStore {
   constructor(public readonly root: string) {}
   private resolve(path: string): string {
     if (!path || path.startsWith("/") || path.includes("\\")) throw new Error(`unsafe store path: ${path}`);
-    const target = resolve(this.root, path);
-    const rel = relative(resolve(this.root), target);
+    const root = resolve(this.root);
+    // A symlink root would be followed on a missing final component.
+    // Callers that intentionally alias a porch must pass its real path.
+    try {
+      if (lstatSync(root).isSymbolicLink()) throw new Error(`store path escapes root: ${path}`);
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      if (code !== "ENOENT") throw e;
+      // Missing store root is a first write, not an escape. Reject only if
+      // an existing ancestor is a symlink, which mkdir would follow.
+      let cursor = root;
+      for (;;) {
+        const parent = dirname(cursor);
+        if (parent === cursor) break;
+        cursor = parent;
+        try {
+          if (lstatSync(cursor).isSymbolicLink()) throw new Error(`store path escapes root: ${path}`);
+          break;
+        } catch (err) {
+          if ((err as { code?: string }).code === "ENOENT") continue;
+          throw err;
+        }
+      }
+    }
+    const target = resolve(root, path);
+    const rel = relative(root, target);
     if (rel === "" || rel.startsWith("..") || rel.includes("../")) throw new Error(`store path escapes root: ${path}`);
+    // Refuse symlinks on every existing component. A timeline/<id> symlink
+    // must not be followed out of the porch on read or write.
+    let cursor = root;
+    for (const part of rel.split("/")) {
+      if (!part || part === ".") continue;
+      cursor = resolve(cursor, part);
+      try {
+        if (lstatSync(cursor).isSymbolicLink()) throw new Error(`store path escapes root: ${path}`);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === "ENOENT") break;
+        throw e;
+      }
+    }
     return target;
   }
   async listObjects(prefix = ""): Promise<string[]> {

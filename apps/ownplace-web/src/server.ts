@@ -3,7 +3,7 @@
 // — the SAME lane as the CLI — so web posts syndicate to every backend.
 //
 // Endpoints:
-//   GET  /api/timeline?backend=nextcloud-sim        verified history timeline
+//   GET  /api/timeline?backend=nextcloud-sim        own + local: followed porches
 //   GET  /api/story?backend=B&id=ID                 verified history story
 //   POST /api/open  {backend?, id, readerKey, readerId?}  open sealed body+media
 //   GET  /api/contacts                              contact list
@@ -29,7 +29,8 @@ import {
   isSafeHistoryId,
   isSafeReaderId,
   publishStory,
-  readAuthenticatedTimeline,
+  readContactFollowedTimeline,
+  readVerifiedFollowedStory,
   readContacts,
   readVerifiedHistoryStory,
   removeContact,
@@ -180,8 +181,18 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       try {
-        const { index } = await readAuthenticatedTimeline(simStore(backend), backend, new Date().toISOString());
-        send(res, 200, index);
+        // Address book lives on nextcloud-sim (the contacts write target).
+        // Own entries still come from the requested backend. https contacts
+        // are listed as not fetched; local: porches are verified independently.
+        const now = new Date().toISOString();
+        const merged = await readContactFollowedTimeline(storesRoot, backend, now, "nextcloud-sim");
+        send(res, 200, {
+          protocol: "rooted/v0.1",
+          kind: "timeline",
+          updatedAt: now,
+          stories: merged.stories,
+          skipped: merged.skipped,
+        });
       } catch {
         send(res, 404, { error: "no timeline" });
       }
@@ -201,7 +212,7 @@ const server = http.createServer(async (req, res) => {
       try {
         // Verified history package only: rejects tampered, missing-signature,
         // and legacy demo-placeholder packages with 404 (never serve them).
-        const story = await readVerifiedHistoryStory(simStore(backend), id);
+        const story = await readVerifiedFollowedStory(storesRoot, backend, id, "nextcloud-sim");
         send(res, 200, story);
       } catch {
         send(res, 404, { error: "not found" });
@@ -239,7 +250,7 @@ const server = http.createServer(async (req, res) => {
       // old shape. Falsy check covers cross-version missing/null markers.
       let story;
       try {
-        story = await readVerifiedHistoryStory(simStore(backend), id);
+        story = await readVerifiedFollowedStory(storesRoot, backend, id, "nextcloud-sim");
       } catch {
         send(res, 404, { error: "not found" });
         return;

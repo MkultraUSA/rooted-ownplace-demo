@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { buildPackage } from "@rooted/timeline";
+import { buildPackage, publishStory } from "@rooted/timeline";
 import http from "node:http";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -281,4 +281,69 @@ test("web API sealed open serves media to the entitled key only (#66)", async ()
     await rm(tmp, { recursive: true, force: true });
   }
   await new Promise((r) => setTimeout(r, 200));
+});
+
+test("web timeline merges local followed porches and isolates tamper (#76)", async () => {
+  const { client, tmp } = await boot();
+  const savedIds = process.env.OWNPLACE_IDENTITY_DIR;
+  process.env.OWNPLACE_IDENTITY_DIR = join(tmp, "ids");
+  try {
+    await publishStory(
+      { title: "Own", body: "mine", authorId: "kinfolk-me", authorName: "Me" },
+      { root: tmp },
+      { createdAt: "2026-09-24T00:00:00.000Z", storyId: "story-own-1" },
+    );
+    await publishStory(
+      { title: "Alex", body: "from alex", authorId: "kinfolk-alex", authorName: "Alex" },
+      { root: join(tmp, "porch-alex") },
+      { createdAt: "2026-09-24T00:02:00.000Z", storyId: "story-alex-1" },
+    );
+    await publishStory(
+      { title: "Sam", body: "from sam", authorId: "kinfolk-sam", authorName: "Sam" },
+      { root: join(tmp, "porch-sam") },
+      { createdAt: "2026-09-24T00:01:00.000Z", storyId: "story-sam-1" },
+    );
+    assert.equal((await client.request("POST", "/api/contacts", JSON.stringify({
+      id: "porch-alex", displayName: "Alex", address: "local:porch-alex/nextcloud-sim",
+    }))).status, 201);
+    assert.equal((await client.request("POST", "/api/contacts", JSON.stringify({
+      id: "porch-sam", displayName: "Sam", address: "local:porch-sam/nextcloud-sim",
+    }))).status, 201);
+    assert.equal((await client.request("POST", "/api/contacts", JSON.stringify({
+      id: "remote-jo", displayName: "Jo", address: "https://porch.example/jo",
+    }))).status, 201);
+
+    const timeline = await client.request("GET", "/api/timeline?backend=nextcloud-sim");
+    assert.equal(timeline.status, 200);
+    const body = timeline.json as {
+      stories: { id: string; origin?: string }[];
+      skipped: { porch?: string; id: string; reason: string }[];
+    };
+    assert.deepEqual(body.stories.map((s) => s.id), ["story-alex-1", "story-sam-1", "story-own-1"]);
+    assert.equal(body.stories.find((s) => s.id === "story-own-1")?.origin, "nextcloud-sim");
+    assert.equal(body.stories.find((s) => s.id === "story-alex-1")?.origin, "porch-alex");
+    assert.ok(body.skipped.some((s) => s.reason === "remote porch not fetched"));
+    assert.ok(!JSON.stringify(timeline.json).includes(tmp), "timeline leaked a store path");
+
+    const story = await client.request("GET", "/api/story?backend=nextcloud-sim&id=story-alex-1");
+    assert.equal(story.status, 200);
+    assert.equal((story.json as { body?: string }).body, "from alex");
+
+    const drive = await client.request("GET", "/api/timeline?backend=google-drive-sim");
+    const driveIds = ((drive.json as { stories: { id: string }[] }).stories).map((s) => s.id);
+    assert.ok(driveIds.includes("story-alex-1"));
+    assert.ok(driveIds.includes("story-own-1"));
+
+    await writeFile(join(tmp, "porch-sam/nextcloud-sim/timeline/story-sam-1/story.json"), "{not json");
+    const again = await client.request("GET", "/api/timeline?backend=nextcloud-sim");
+    const againBody = again.json as { stories: { id: string }[]; skipped: { id: string; porch?: string }[] };
+    assert.deepEqual(againBody.stories.map((s) => s.id), ["story-alex-1", "story-own-1"]);
+    assert.ok(againBody.skipped.some((s) => s.id === "story-sam-1" && s.porch === "porch-sam"));
+    assert.ok(!JSON.stringify(again.json).includes(tmp));
+  } finally {
+    if (savedIds === undefined) delete process.env.OWNPLACE_IDENTITY_DIR;
+    else process.env.OWNPLACE_IDENTITY_DIR = savedIds;
+    client.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
 });
