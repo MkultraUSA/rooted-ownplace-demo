@@ -21,7 +21,7 @@ import { isMediaList, isSafeReaderId, isSealedBody, loadOrCreateEncryptionIdenti
 // Re-exported for the web reader gate (M8 #66): same reader-id rule server-side.
 export { isSafeReaderId } from "@rooted/protocol";
 import { LocalFolderStore, WebDavStore, type ObjectStore } from "@rooted/storage";
-import { mkdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, realpath } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
@@ -503,30 +503,50 @@ function safePorchName(id: string): string {
   return isPorchLabel(id) ? id : "contact";
 }
 
-async function containedPorchPath(storesRoot: string, rel: string): Promise<string | null> {
-  if (!rel || rel.startsWith("/") || rel.includes("\\") || rel.includes("\0")) return null;
+type PorchLocate = { kind: "ok"; path: string } | { kind: "missing" } | { kind: "bad" };
+
+function outsideRoot(root: string, target: string): boolean {
+  const from = relative(root, target);
+  return from.startsWith("..") || from.includes("../");
+}
+
+// Never return a path that has not been realpath-checked. A missing final
+// component must not hide an ancestor symlink that leaves the root: that
+// unresolved path would be followed on the later read.
+async function locatePorch(storesRoot: string, rel: string): Promise<PorchLocate> {
+  if (!rel || rel.startsWith("/") || rel.includes("\\") || rel.includes("\0")) return { kind: "bad" };
   const parts = rel.split("/");
-  if (parts.some((part) => part === "" || part === "." || part === "..")) return null;
-  const root = resolve(storesRoot);
-  const target = resolve(root, rel);
-  const lexical = relative(root, target);
-  if (lexical === "" || lexical.startsWith("..") || lexical.includes("../")) return null;
+  if (parts.some((part) => part === "" || part === "." || part === "..")) return { kind: "bad" };
+  let realRoot: string;
   try {
-    const realTarget = await realpath(target);
-    let realRoot: string;
-    try {
-      realRoot = await realpath(root);
-    } catch {
-      return null;
-    }
-    const from = relative(realRoot, realTarget);
-    if (from.startsWith("..") || from.includes("../")) return null;
-    return realTarget;
+    realRoot = await realpath(resolve(storesRoot));
   } catch {
-    // Missing porch: lexical path is still inside the root. The read
-    // fails closed as unreadable rather than reaching outside.
-    return target;
+    return { kind: "bad" };
   }
+  let cursor = realRoot;
+  for (const part of parts) {
+    const next = resolve(cursor, part);
+    let st;
+    try {
+      st = await lstat(next);
+    } catch {
+      return { kind: "missing" };
+    }
+    if (st.isSymbolicLink()) {
+      let real: string;
+      try {
+        real = await realpath(next);
+      } catch {
+        return { kind: "bad" };
+      }
+      if (outsideRoot(realRoot, real)) return { kind: "bad" };
+      cursor = real;
+      continue;
+    }
+    if (!st.isDirectory() || outsideRoot(realRoot, next)) return { kind: "bad" };
+    cursor = next;
+  }
+  return { kind: "ok", path: cursor };
 }
 
 interface ResolvedPorch {
@@ -541,15 +561,22 @@ async function resolveContactPorches(
   contactsLabel: string,
 ): Promise<{ porches: ResolvedPorch[]; skipped: { porch: string; id: string; reason: string }[] }> {
   if (!isPorchLabel(ownLabel) || !isPorchLabel(contactsLabel)) throw new Error("bad porch label");
-  const ownPath = await containedPorchPath(storesRoot, ownLabel);
-  const contactsPath = await containedPorchPath(storesRoot, contactsLabel);
-  if (!ownPath || !contactsPath) throw new Error("bad porch label");
-  const ownStore = new LocalFolderStore(ownPath);
-  const contactsStore = contactsPath === ownPath ? ownStore : new LocalFolderStore(contactsPath);
+  const ownLoc = await locatePorch(storesRoot, ownLabel);
+  const contactsLoc = await locatePorch(storesRoot, contactsLabel);
+  if (ownLoc.kind === "bad" || contactsLoc.kind === "bad") throw new Error("bad porch label");
   const skipped: { porch: string; id: string; reason: string }[] = [];
-  const porches: ResolvedPorch[] = [{ label: ownLabel, store: ownStore, path: ownPath }];
-  const seen = new Set<string>([ownPath]);
-  const contacts = await readContacts(contactsStore);
+  const porches: ResolvedPorch[] = [];
+  const seen = new Set<string>();
+  if (ownLoc.kind === "ok") {
+    porches.push({ label: ownLabel, store: new LocalFolderStore(ownLoc.path), path: ownLoc.path });
+    seen.add(ownLoc.path);
+  }
+  const contactsStore = contactsLoc.kind === "ok"
+    ? (ownLoc.kind === "ok" && contactsLoc.path === ownLoc.path
+      ? porches[0].store
+      : new LocalFolderStore(contactsLoc.path))
+    : null;
+  const contacts = contactsStore ? await readContacts(contactsStore) : { contacts: [] as Contact[] };
   for (const contact of contacts.contacts) {
     const address = contact.address?.trim() ?? "";
     if (!address) continue;
@@ -563,18 +590,18 @@ async function resolveContactPorches(
       continue;
     }
     const rel = address.slice("local:".length);
-    const porchPath = await containedPorchPath(storesRoot, rel);
-    if (!porchPath) {
+    const porchLoc = await locatePorch(storesRoot, rel);
+    if (porchLoc.kind !== "ok") {
       skipped.push({ porch, id: "*", reason: FOLLOW_SKIP_ADDRESS });
       continue;
     }
-    if (seen.has(porchPath)) continue;
+    if (seen.has(porchLoc.path)) continue;
     if (!isPorchLabel(contact.id)) {
       skipped.push({ porch, id: "*", reason: FOLLOW_SKIP_LABEL });
       continue;
     }
-    seen.add(porchPath);
-    porches.push({ label: contact.id, store: new LocalFolderStore(porchPath), path: porchPath });
+    seen.add(porchLoc.path);
+    porches.push({ label: contact.id, store: new LocalFolderStore(porchLoc.path), path: porchLoc.path });
   }
   return { porches, skipped };
 }
@@ -602,8 +629,10 @@ export async function readVerifiedFollowedStory(
   if (!isSafeHistoryId(id)) throw new Error("not found");
   const { porches } = await resolveContactPorches(storesRoot, ownLabel, contactsLabel);
   for (const porch of porches) {
-    // First porch that has the package owns the id, even if unverified.
-    if (!(await porch.store.exists(`timeline/${id}/manifest.json`))) continue;
+    // Any file under the id owns it, even with no manifest, so a squat
+    // cannot fall through when the first porch is only partly present.
+    const listed = await porch.store.listObjects(`timeline/${id}/`);
+    if (listed.length === 0) continue;
     return readVerifiedHistoryStory(porch.store, id);
   }
   throw new Error("not found");

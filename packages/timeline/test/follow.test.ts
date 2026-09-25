@@ -220,6 +220,10 @@ test("contact follow: own plus two local porches merge; tamper and escape stay i
       { root: outside },
       { createdAt: "2026-09-24T00:04:00.000Z", storyId: "story-outside-1" },
     );
+    await symlink(outside, join(dir, "via-parent"));
+    await addContact(own, validateContact({
+      id: "via-parent", displayName: "Via", address: "local:via-parent/nextcloud-sim",
+    }));
     await symlink(join(outside, "nextcloud-sim"), join(dir, "escape"));
     await addContact(own, validateContact({
       id: "escape-porch", displayName: "Escape", address: "local:escape",
@@ -227,6 +231,7 @@ test("contact follow: own plus two local porches merge; tamper and escape stay i
     const escaped = await readContactFollowedTimeline(dir, "nextcloud-sim", now);
     assert.ok(!escaped.stories.some((s) => s.id === "story-outside-1"));
     assert.ok(escaped.skipped.some((s) => s.porch === "escape-porch" && s.reason === "bad porch address"));
+    assert.ok(escaped.skipped.some((s) => s.porch === "via-parent" && s.reason === "bad porch address"));
     assert.ok(!JSON.stringify(escaped).includes(outside));
     await rm(outside, { recursive: true, force: true });
 
